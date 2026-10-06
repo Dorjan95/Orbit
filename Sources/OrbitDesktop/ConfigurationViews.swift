@@ -495,7 +495,7 @@ struct VoiceSettingsView: View {
             !systemVoices.contains(where: { $0.identifier == controller.settings.systemVoiceID })
           {
             Text(
-              AVSpeechSynthesisVoice(identifier: controller.settings.systemVoiceID)
+              SystemVoices.selected(controller.settings.systemVoiceID)
                 .map(SystemVoices.title) ?? "Voce salvata non disponibile"
             )
             .tag(controller.settings.systemVoiceID)
@@ -513,7 +513,7 @@ struct VoiceSettingsView: View {
         .font(.system(size: 12)).foregroundStyle(Palette.muted)
       }
       if !controller.settings.systemVoiceID.isEmpty,
-        AVSpeechSynthesisVoice(identifier: controller.settings.systemVoiceID) == nil
+        SystemVoices.selected(controller.settings.systemVoiceID) == nil
       {
         Text(
           "La voce salvata non è più disponibile. Orbit usa la voce automatica finché non ne scegli un’altra."

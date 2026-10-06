@@ -23,9 +23,13 @@ import Foundation
       + voice.name + quality + " · " + voice.language
   }
   static func resolve(_ identifier: String, language: String) -> AVSpeechSynthesisVoice? {
-    if !identifier.isEmpty, let chosen = AVSpeechSynthesisVoice(identifier: identifier) {
-      return chosen
-    }
-    return AVSpeechSynthesisVoice(language: language)
+    selected(identifier) ?? AVSpeechSynthesisVoice(language: language)
+  }
+  static func selected(_ identifier: String) -> AVSpeechSynthesisVoice? {
+    // Some macOS releases return a different default voice for an unknown identifier.
+    guard !identifier.isEmpty, let voice = AVSpeechSynthesisVoice(identifier: identifier),
+      voice.identifier == identifier
+    else { return nil }
+    return voice
   }
 }

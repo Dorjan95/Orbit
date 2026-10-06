@@ -86,6 +86,7 @@ import XCTest
     let saved = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(settings))
     XCTAssertEqual(saved.speechProvider, .system)
     XCTAssertEqual(saved.systemVoiceID, "saved-apple-voice")
+    XCTAssertNil(SystemVoices.selected("unavailable-voice"))
     XCTAssertEqual(
       SystemVoices.resolve("unavailable-voice", language: "it-IT")?.identifier,
       AVSpeechSynthesisVoice(language: "it-IT")?.identifier)
