@@ -1,0 +1,17 @@
+name: Swift CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  macOS:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: swift --version
+      - name: Tests
+        run: swift test
+      - name: App bundle
+        run: ./scripts/build.sh

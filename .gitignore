@@ -1,0 +1,9 @@
+.build/
+build/
+.swiftpm/
+.DS_Store
+.env*
+*.key
+*.pem
+__pycache__/
+*.pyc
