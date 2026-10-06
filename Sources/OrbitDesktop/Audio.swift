@@ -96,16 +96,16 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
       let final = result?.isFinal ?? false
       let failed = error != nil
       Task { @MainActor [weak self] in
-        guard let self, recognitionID == token else { return }
-        if let text { receive(text, final: final) }
-        guard recognitionID == token else { return }
+        guard let self, self.recognitionID == token else { return }
+        if let text { self.receive(text, final: final) }
+        guard self.recognitionID == token else { return }
         if failed || final {
-          endRecognition()
-          renewal?.cancel()
-          renewal = Task {
+          self.endRecognition()
+          self.renewal?.cancel()
+          self.renewal = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            configure()
+            self?.configure()
           }
         }
       }
