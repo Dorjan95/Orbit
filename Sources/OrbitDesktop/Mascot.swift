@@ -18,7 +18,7 @@ struct MotionLibrary: Decodable {
   let clips: [String: Clip]
   @MainActor static let shared: MotionLibrary? = {
     guard
-      let url = Bundle.module.url(
+      let url = OrbitResources.bundle.url(
         forResource: "AeroMeshyMotion", withExtension: "json", subdirectory: "Resources"),
       let data = try? Data(contentsOf: url)
     else { return nil }
@@ -70,7 +70,7 @@ struct MotionLibrary: Decodable {
       let anchor = AnchorEntity(world: .zero)
       view.scene.addAnchor(anchor)
       if Self.asset == nil,
-        let url = Bundle.module.url(
+        let url = OrbitResources.bundle.url(
           forResource: "AeroMeshy", withExtension: "usdz", subdirectory: "Resources")
       {
         Self.asset = try? Entity.load(contentsOf: url)

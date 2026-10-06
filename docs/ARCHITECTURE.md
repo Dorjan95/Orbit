@@ -66,3 +66,15 @@ L’importatore del precedente prototipo è solo un adattatore di dati. Non incl
 ## Build e distribuzione
 
 `scripts/build.sh` produce `build/Orbit.app`, copia il resource bundle SwiftPM e applica una firma ad hoc. `scripts/install.sh` conserva la precedente app prima di installare la nuova. L’identità dell’app è `io.github.dorjan95.orbit`; i permessi di microfono e Speech sono quindi separati da quelli del vecchio prototipo.
+
+## Browser dei lavori Codex
+
+La navigazione usa Playwright MCP 0.0.83 e MCP SDK 1.32.1, con dipendenze bloccate nel lockfile incluso nelle risorse. Node.js e Google Chrome sono prerequisiti della funzione opzionale. Il modulo viene installato nella cartella dati di Orbit e non aggiunge file alle repository registrate.
+
+`BrowserCoordinator` mantiene un host Node per sessione Orbit. L’host espone MCP Streamable HTTP solo su `127.0.0.1`, su una porta assegnata dal sistema, con un token casuale per quel processo. Verifica bearer token, Host e assenza di Origin prima di accettare una richiesta. I token restano in memoria e vengono passati ai lavori tramite variabile d’ambiente; la configurazione MCP è specifica dell’invocazione CLI. L’interprete non riceve questi strumenti: riceve invece un elenco delle capacità effettivamente configurate nell’app.
+
+Il browser è un contesto Chrome persistente per ID sessione, gestito dall’host e riutilizzato dai client MCP successivi. La fine di un turno CLI non chiude il contesto; un login manuale o una domanda possono quindi essere completati prima di riprendere la stessa sessione. La chiusura della scheda sessione o dell’app termina i processi gestiti. Ogni sessione concorrente ha un profilo distinto e non importa i dati del Chrome personale. Il server rifiuta strumenti esterni all’elenco di navigazione e interazione, tra cui esecuzione arbitraria di JavaScript e upload.
+
+Gli strumenti dell’host Orbit sono approvati nella configurazione del solo server `orbit_browser`, così `codex exec` può navigare senza richieste CLI non gestibili in background. La sandbox dei file del worker conserva la scelta del progetto. L’host aggiunge una verifica degli elementi prima delle interazioni: usa i riferimenti dello snapshot, blocca campi riconoscibili come credenziali e chiede conferma nell’app per invii riconoscibili. La risposta alla conferma usa un endpoint locale autenticato e scade dopo 90 secondi. È una protezione aggiuntiva, non una classificazione completa degli effetti di ogni sito. Il contesto Chrome mantiene la sandbox Chromium attiva.
+
+I test Swift verificano configurazione del worker, isolamento dell’interprete e assenza di token negli argomenti. Il test Node verifica il protocollo MCP, autenticazione, rifiuto di richieste da pagine web e blocco degli strumenti esclusi. La verifica dell’app comprende la richiesta di apertura di una pagina pubblica e l’ispezione della finestra browser.

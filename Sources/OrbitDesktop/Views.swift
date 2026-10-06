@@ -444,6 +444,13 @@ struct JobCard: View {
         } label: {
           Label("Terminale", systemImage: "terminal")
         }
+        if controller.browserReady && job.agent == .codex {
+          Button {
+            controller.showBrowser(job.id)
+          } label: {
+            Label("Browser", systemImage: "globe")
+          }
+        }
         Button {
           controller.openLog(job)
         } label: {

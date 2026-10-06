@@ -167,6 +167,7 @@ public struct Settings: Codable, Sendable {
   public var speechSpeed = 1.0
   public var systemFallback = true
   public var configured = false
+  public var browserEnabled = false
   public init() {}
   enum CodingKeys: String, CodingKey {
     case language, interpreter, assistant, worker, maximumJobs, generalDirectory,
@@ -174,7 +175,8 @@ public struct Settings: Codable, Sendable {
       startup, announcements, summaries, openResults, focusSilence, sound, alwaysShowVoice,
       panelOpacity, pushKey, pushModifiers, sessionsKey, sessionsModifiers, mascotVisible,
       mascotHeight, mascotMotion, mascotCaption, mascotPosition, sessionsPosition, clips,
-      fishVoiceID, fishVoiceTitle, fishModel, speechSpeed, systemFallback, configured
+      fishVoiceID, fishVoiceTitle, fishModel, speechSpeed, systemFallback, configured,
+      browserEnabled
   }
   public init(from decoder: any Decoder) throws {
     self.init()
@@ -221,6 +223,7 @@ public struct Settings: Codable, Sendable {
     speechSpeed = try c.decodeIfPresent(Double.self, forKey: .speechSpeed) ?? speechSpeed
     systemFallback = try c.decodeIfPresent(Bool.self, forKey: .systemFallback) ?? systemFallback
     configured = try c.decodeIfPresent(Bool.self, forKey: .configured) ?? configured
+    browserEnabled = try c.decodeIfPresent(Bool.self, forKey: .browserEnabled) ?? browserEnabled
   }
 }
 public struct Exchange: Codable, Sendable {

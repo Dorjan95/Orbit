@@ -1,9 +1,29 @@
 import AppKit
+import Darwin
 import OrbitCore
 import SwiftUI
 
 @main struct OrbitApplication {
   @MainActor static func main() {
+    if ProcessInfo.processInfo.arguments.contains("--check-resources") {
+      guard let bundle = OrbitResources.packaged(in: .main) else {
+        print("Missing packaged Orbit resources")
+        exit(1)
+      }
+      let names = [
+        "AeroMeshy.usdz", "AeroMeshyMotion.json", "Browser/server.mjs", "Browser/package-lock.json",
+      ]
+      for name in names {
+        guard let root = bundle.url(forResource: "Resources", withExtension: nil),
+          FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path)
+        else {
+          print("Missing resource: \(name)")
+          exit(1)
+        }
+      }
+      print("Orbit resources verified: \(bundle.bundleURL.path)")
+      return
+    }
     let app = NSApplication.shared
     let delegate = OrbitDelegate()
     app.delegate = delegate

@@ -24,7 +24,10 @@ public enum Executables {
   }
 }
 public enum AgentCLI {
-  public static func worker(_ job: Job, settings: Settings, prompt: String, resuming: Bool) throws
+  public static func worker(
+    _ job: Job, settings: Settings, prompt: String, resuming: Bool,
+    browser: BrowserConnection? = nil
+  ) throws
     -> Invocation
   {
     let override = job.agent == .codex ? settings.codexExecutable : settings.claudeExecutable
@@ -47,6 +50,22 @@ public enum AgentCLI {
       case .full: args += ["--dangerously-bypass-approvals-and-sandbox"]
       }
       try addModel(job.model, to: &args)
+      if let browser {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        let encoded = String(decoding: try encoder.encode(browser.url), as: UTF8.self)
+        let tools = String(decoding: try JSONEncoder().encode(BrowserSupport.tools), as: UTF8.self)
+        args += [
+          "-c", "mcp_servers.orbit_browser.url=\(encoded)",
+          "-c", "mcp_servers.orbit_browser.bearer_token_env_var=\"ORBIT_BROWSER_TOKEN\"",
+          "-c", "mcp_servers.orbit_browser.enabled=true",
+          "-c", "mcp_servers.orbit_browser.required=true",
+          "-c", "mcp_servers.orbit_browser.default_tools_approval_mode=\"approve\"",
+          "-c", "mcp_servers.orbit_browser.enabled_tools=\(tools)",
+          "-c", "mcp_servers.orbit_browser.startup_timeout_sec=30",
+          "-c", "mcp_servers.orbit_browser.tool_timeout_sec=120",
+        ]
+      }
       if resuming, let id = job.resumeID { args += ["resume", id, "-"] } else { args += ["-"] }
     } else {
       args = ["--print", "--verbose", "--output-format", "stream-json"]
@@ -57,7 +76,14 @@ public enum AgentCLI {
       }
       if resuming, let id = job.resumeID { args += ["--resume", id] }
     }
-    return Invocation(executable: executable, arguments: args, directory: directory, input: prompt)
+    var environment: [String: String]? = nil
+    if job.agent == .codex, let browser {
+      environment = ProcessInfo.processInfo.environment
+      environment?["ORBIT_BROWSER_TOKEN"] = browser.token
+    }
+    return Invocation(
+      executable: executable, arguments: args, directory: directory, input: prompt,
+      environment: environment)
   }
   public static func interactive(_ job: Job, settings: Settings) throws -> Invocation {
     let override = job.agent == .codex ? settings.codexExecutable : settings.claudeExecutable

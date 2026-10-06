@@ -20,6 +20,7 @@ Il codice è MIT. Il progetto è scritto in Swift, usa SwiftUI, AppKit e Reality
 - Eseguire fino a **sei sessioni simultanee**, anche su repository diverse. I lavori oltre il limite aspettano in coda.
 - Rispondere a una sessione precisa, riprenderne il contesto o accodare una nuova richiesta mentre l’agente sta lavorando.
 - Leggere risultato e attività, aprire il log o proseguire nel terminale del CLI.
+- Aprire siti, leggere pagine e navigare con un browser Chrome dedicato alle sessioni Codex.
 - Usare modelli locali per interpretazione e lavori Codex, scegliendoli separatamente.
 - Cercare una voce Fish Audio per nome oppure aggiungerla tramite **link o ID**.
 - Salvare preferenze esplicite nella memoria e vedere le richieste recenti.
@@ -35,6 +36,7 @@ flowchart LR
     B --> C{Progetto e sessione}
     C --> D[Codex CLI]
     C --> E[Claude Code CLI]
+    D --> H[Browser Chrome via MCP]
     D --> F[Attività e risultato]
     E --> F
     F --> G[Pannello, voce e Aero]
@@ -124,6 +126,18 @@ Orbit usa `codex exec --oss --local-provider` per i modelli locali. Non scarica 
 Per i lavori locali puoi abilitare le integrazioni del tuo CLI. Quando sono disabilitate, Orbit non carica la configurazione utente, i plugin, le app o la ricerca web di Codex. L’interprete rimane isolato in entrambi i casi. Claude usa il proprio account CLI; questi selettori locali si applicano a Codex.
 
 Scegliere un modello locale riguarda l’AI, non tutti i servizi: Fish Audio invia il testo da pronunciare al suo servizio. Per un percorso vocale senza Fish, rimuovi la chiave e usa la voce di sistema; Speech di Apple può usare il servizio Apple quando il riconoscimento sul dispositivo non è supportato.
+
+## Navigazione web
+
+Orbit può aprire siti, leggere pagine e navigare con **Playwright MCP** in una finestra Google Chrome dedicata ai lavori Codex. Per configurarlo, installa Node.js 18 o successivo e Google Chrome, poi apri **Modelli → Navigazione web → Configura browser**. L’installazione usa versioni fissate nel lockfile: Playwright MCP 0.0.83 e MCP SDK 1.32.1.
+
+Prova: **«Orbit, apri LinkedIn nel browser»** oppure **«Orbit, vai su questo sito e riassumi la pagina»**. Le richieste operative creano una sessione di lavoro; l’interprete continua a occuparsi soltanto dello smistamento.
+
+Ogni sessione Orbit ha un profilo separato, conservato in `~/Library/Application Support/Orbit/browser/profiles/<sessione>`. La finestra resta disponibile quando l’agente attende un input. Se un sito richiede il login, premi **Browser** nella scheda della sessione, accedi manualmente e poi rispondi nella stessa sessione per continuare. Il browser non importa il profilo personale di Chrome. I contenuti dietro un login e i CAPTCHA richiedono l’intervento dell’utente.
+
+Il collegamento tra CLI e browser usa MCP su un indirizzo locale con un token temporaneo. Il token passa nell’ambiente del processo, senza essere salvato nello stato o negli argomenti del CLI. La navigazione espone strumenti per pagine, schede e moduli; l’esecuzione arbitraria di JavaScript e l’upload di file non sono esposti. I dati letti sulle pagine possono comparire nei log della sessione. Per invii, pubblicazioni e altre azioni che richiedono autorizzazione, l’agente deve prima preparare il risultato da verificare. Chiudere una scheda sessione dal pannello chiude il relativo browser; i dati del profilo rimangono disponibili quando quella sessione viene ripresa.
+
+Orbit blocca l’inserimento automatico nei campi riconoscibili come password o codici di accesso e mostra una conferma per invii di moduli e pulsanti riconoscibili come pubblicazioni, invii o acquisti. Questa verifica integra le istruzioni dell’agente: non classifica ogni possibile azione di ogni sito. La lettura e la normale navigazione non richiedono una conferma per ogni passaggio.
 
 ## Voce Fish Audio
 

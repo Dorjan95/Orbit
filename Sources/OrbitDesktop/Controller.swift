@@ -21,6 +21,9 @@ import OrbitCore
   var wakeStatus = "Ascolto non avviato"
   var wakeHeard = ""
   var voiceNeedsPermission = false
+  var browserInstalling = false
+  @ObservationIgnored private lazy var browser = BrowserCoordinator(folder: disk.folder)
+  var browserReady: Bool { settings.browserEnabled && BrowserSupport.ready(in: disk.folder) }
   var message = ""
   var error: String?
   var selectedSession: UUID?
@@ -156,7 +159,9 @@ import OrbitCore
     routeTask = Task { [weak self] in
       guard let self else { return }
       do {
-        let decision = try await Routing.interpret(request, snapshot: state, selected: selected)
+        let decision = try await Routing.interpret(
+          request, snapshot: state, selected: selected,
+          browserAvailable: browserReady && settings.interpreter == .codex)
         guard !Task.isCancelled else { return }
         isInterpreting = false
         apply(decision, heard: request)
@@ -314,6 +319,30 @@ import OrbitCore
       speak("Avvio il lavoro su \(job.workspaceName).", state: .working, announcement: true)
       tasks[id] = Task { [weak self] in
         guard let self else { return }
+        var invocation = invocation
+        if browserReady && job.agent == .codex {
+          do {
+            let connection = try await browser.connection(for: id)
+            try Task.checkCancellation()
+            invocation = try AgentCLI.worker(
+              job, settings: settings,
+              prompt: prompt + "\n\n" + BrowserSupport.instructions,
+              resuming: job.resumeID != nil, browser: connection)
+          } catch {
+            processes[id] = nil
+            tasks[id] = nil
+            if let i = snapshot.jobs.firstIndex(where: { $0.id == id }),
+              snapshot.jobs[i].status != .cancelled
+            {
+              snapshot.jobs[i].status = .failed
+              snapshot.jobs[i].result = error.localizedDescription
+              snapshot.jobs[i].finished = Date()
+              speak(error.localizedDescription, state: .problem)
+            }
+            pump()
+            return
+          }
+        }
         var exit: Int32 = -1
         var problem: String?
         var needsInput = false
@@ -397,11 +426,30 @@ import OrbitCore
   func dismissJob(_ id: UUID) {
     if let i = snapshot.jobs.firstIndex(where: { $0.id == id }), !snapshot.jobs[i].status.ongoing {
       snapshot.jobs[i].hidden = true
+      browser.close(id)
     }
   }
   func clearFinished() {
     for i in snapshot.jobs.indices where !snapshot.jobs[i].status.ongoing {
       snapshot.jobs[i].hidden = true
+      browser.close(snapshot.jobs[i].id)
+    }
+  }
+  func installBrowser() {
+    guard !browserInstalling else { return }
+    browserInstalling = true
+    Task {
+      defer { browserInstalling = false }
+      do {
+        try await browser.install()
+        settings.browserEnabled = true
+        error = nil
+      } catch { self.error = error.localizedDescription }
+    }
+  }
+  func showBrowser(_ id: UUID) {
+    Task {
+      do { try await browser.show(id) } catch { self.error = error.localizedDescription }
     }
   }
   func openLog(_ job: Job) {
@@ -442,6 +490,7 @@ import OrbitCore
   }
   func shutdown() {
     routeTask?.cancel()
+    browser.stop()
     audio?.stop()
     for process in processes.values { process.cancel() }
     persist()

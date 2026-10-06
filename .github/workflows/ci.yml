@@ -13,5 +13,17 @@ jobs:
         run: swift --version
       - name: Tests
         run: swift test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Browser transport
+        run: |
+          mkdir -p build/browser-runtime
+          cp Sources/OrbitDesktop/Resources/Browser/package*.json build/browser-runtime/
+          npm ci --prefix build/browser-runtime --ignore-scripts --no-audit --no-fund
+          node --check Sources/OrbitDesktop/Resources/Browser/server.mjs
+          ORBIT_BROWSER_RUNTIME="$PWD/build/browser-runtime" node --test Tests/Browser/server.test.mjs
       - name: App bundle
-        run: ./scripts/build.sh
+        run: |
+          ./scripts/build.sh
+          build/Orbit.app/Contents/MacOS/Orbit --check-resources

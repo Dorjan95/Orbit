@@ -27,7 +27,9 @@ public struct Decision: Codable, Sendable {
     #"{"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["start","resume","status","cancel","reply","remember","forget","create"]},"projectID":{"type":["string","null"]},"sessionID":{"type":["string","null"]},"task":{"type":"string"},"reply":{"type":"string"},"memory":{"type":["string","null"]},"projectName":{"type":["string","null"]}},"required":["action","projectID","sessionID","task","reply","memory","projectName"]}"#
 }
 public enum Routing {
-  public static func interpret(_ heard: String, snapshot: Snapshot, selected: UUID? = nil)
+  public static func interpret(
+    _ heard: String, snapshot: Snapshot, selected: UUID? = nil, browserAvailable: Bool = false
+  )
     async throws -> Decision
   {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -37,7 +39,8 @@ public enum Routing {
     let schema = folder.appendingPathComponent("decision-schema.json")
     let output = folder.appendingPathComponent("reply.json")
     try Data(Decision.schema.utf8).write(to: schema)
-    let prompt = context(heard, snapshot: snapshot, selected: selected)
+    let prompt = context(
+      heard, snapshot: snapshot, selected: selected, browserAvailable: browserAvailable)
     let invocation = try AgentCLI.interpreter(
       settings: snapshot.settings, directory: folder, schema: schema, output: output, prompt: prompt
     )
@@ -104,7 +107,9 @@ public enum Routing {
     }
     return decision
   }
-  public static func context(_ heard: String, snapshot: Snapshot, selected: UUID?) -> String {
+  public static func context(
+    _ heard: String, snapshot: Snapshot, selected: UUID?, browserAvailable: Bool = false
+  ) -> String {
     struct Project: Encodable {
       let id: String
       let name: String
@@ -120,6 +125,7 @@ public enum Routing {
     }
     struct Input: Encodable {
       let request: String
+      let browserAvailable: Bool
       let selectedSession: String?
       let projects: [Project]
       let sessions: [Session]
@@ -127,7 +133,7 @@ public enum Routing {
       let conversation: [Exchange]
     }
     let input = Input(
-      request: heard, selectedSession: selected?.uuidString,
+      request: heard, browserAvailable: browserAvailable, selectedSession: selected?.uuidString,
       projects: snapshot.workspaces.map {
         Project(id: $0.id.uuidString, name: $0.name, aliases: $0.aliases)
       },
@@ -147,6 +153,7 @@ public enum Routing {
       start: avvia una nuova attività sul progetto indicato; projectID null solo per richieste generali, senza progetto.
       resume: continua una sessione specifica usando il suo ID Orbit, mai il suo ID CLI. cancel: annulla una sessione specifica. status: riferisci lo stato o seleziona una sessione. reply: conversazione o domanda di chiarimento. remember/forget: preferenza esplicitamente richiesta. create: nuovo progetto con nome semplice in projectName e task da affidare all’agente.
       Non inventare ID, fatti, risultati o capacità. Se progetto o sessione sono ambigui, usa reply e chiedi quale. «Continua» può usare selectedSession se presente; altrimenti scegli solo quando c’è un unico candidato coerente. Più sessioni dello stesso progetto richiedono chiarimento sul compito. Non scegliere la sessione più recente come scorciatoia. start e resume sono distinti: non avviare un nuovo lavoro per una risposta a una sessione esistente. Non promettere che il lavoro è già stato eseguito. reply deve essere breve e naturale; task deve contenere il lavoro completo richiesto, includendo le precisazioni. Non tradurre i nomi dei progetti.
+      Le capacità dell'interprete non sono le capacità dell'app: tu smisti richieste, mentre gli agenti eseguono i lavori. Se browserAvailable è true, Orbit può aprire siti, leggere pagine e navigare nei lavori Codex usando un browser Chrome dedicato. Per nuove richieste operative come «apri LinkedIn» o «vai su Internet e cerca…», usa start con projectID null e conserva il compito completo; non rispondere che non hai strumenti. Se l’utente chiede di continuare la navigazione di una sessione esistente, usa resume con il suo ID. Per una domanda generica sulle capacità («sai andare su Internet?»), usa reply e spiega brevemente questa capacità. Se browserAvailable è false, indica che la navigazione va configurata in Modelli → Navigazione web, senza attribuire all'app i limiti dell'interprete. Login e CAPTCHA richiedono l'intervento dell'utente nella finestra del browser.
       DATI:
       \(json)
       """

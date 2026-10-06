@@ -164,6 +164,35 @@ struct ModelsView: View {
       ModelCard(
         title: "Modello per i lavori Codex", choice: controller.binding(\.worker),
         controller: controller)
+      Card("Navigazione web") {
+        ControlRow("Browser per i lavori Codex") {
+          Toggle("Browser", isOn: controller.binding(\.browserEnabled))
+            .disabled(!BrowserSupport.ready(in: controller.disk.folder))
+        }
+        Text(
+          "Orbit può aprire siti, leggere pagine e navigare in una finestra Chrome dedicata. Ogni sessione conserva il proprio profilo. Puoi effettuare il login direttamente nella finestra e poi continuare la sessione."
+        )
+        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+        HStack {
+          Label(
+            BrowserSupport.ready(in: controller.disk.folder)
+              ? "Browser configurato" : "Configurazione necessaria",
+            systemImage: BrowserSupport.ready(in: controller.disk.folder)
+              ? "checkmark.circle" : "globe")
+          Spacer()
+          if controller.browserInstalling { ProgressView().controlSize(.small) }
+          Button(
+            BrowserSupport.ready(in: controller.disk.folder)
+              ? "Reinstalla strumenti" : "Configura browser"
+          ) {
+            controller.installBrowser()
+          }.disabled(controller.browserInstalling)
+        }
+        Text(
+          "Richiede Node.js 18 o successivo e Google Chrome. Gli strumenti Playwright MCP vengono installati nella cartella dati di Orbit."
+        )
+        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+      }
       Card("CLI e account") {
         ForEach(Agent.allCases, id: \.self) { agent in
           VStack(alignment: .leading, spacing: 9) {
