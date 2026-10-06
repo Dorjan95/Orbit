@@ -427,9 +427,21 @@ struct JobCard: View {
         Text("\(job.queued.count) richieste in coda per questa sessione").font(.system(size: 11))
           .foregroundStyle(Palette.accent)
       }
+      ForEach(controller.prompts[job.id] ?? []) { ask in
+        AgentPromptView(controller: controller, job: job.id, prompt: ask).id(ask.id)
+      }
+      if let tools = controller.integrationCatalog[job.id], !tools.isEmpty {
+        DisclosureGroup("Integrazioni disponibili in questa sessione") {
+          IntegrationsList(items: tools)
+        }
+        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+      }
       HStack {
         TextField(
-          job.status == .running ? "Aggiungi una richiesta alla coda…" : "Cosa deve fare adesso?",
+          controller.prompts[job.id]?.isEmpty == false
+            ? "Rispondi alla richiesta aperta…"
+            : job.status == .running
+              ? "Aggiungi una richiesta alla coda…" : "Cosa deve fare adesso?",
           text: $reply
         ).textFieldStyle(.plain).onSubmit(send)
         Button(action: send) {

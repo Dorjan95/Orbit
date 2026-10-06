@@ -164,6 +164,38 @@ struct ModelsView: View {
       ModelCard(
         title: "Modello per i lavori Codex", choice: controller.binding(\.worker),
         controller: controller)
+      Card("Integrazioni Codex") {
+        Text(
+          "Orbit usa la configurazione e l’account del tuo CLI Codex. MCP, skill e plugin disponibili al CLI possono essere usati nei lavori; gli strumenti esclusivi dell’app Codex richiedono un collegamento separato."
+        )
+        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+        HStack {
+          Text("MCP per i nuovi lavori nella cartella generale").font(.system(size: 12))
+          Spacer()
+          if controller.catalogLoading { ProgressView().controlSize(.small) }
+          Button("Verifica connessioni") { controller.refreshIntegrations() }.disabled(
+            controller.catalogLoading)
+        }
+        if let error = controller.catalogError {
+          Text(error).font(.system(size: 12)).foregroundStyle(.orange)
+        }
+        if controller.catalogLoaded {
+          if controller.catalog.isEmpty {
+            Text(
+              controller.settings.worker.provider.local && !controller.settings.worker.integrations
+                ? "Le integrazioni del CLI sono disabilitate per il modello locale."
+                : "Nessun MCP disponibile in questa configurazione. Aggiungilo nel CLI Codex, poi verifica di nuovo."
+            )
+            .font(.system(size: 12)).foregroundStyle(Palette.muted)
+          } else {
+            IntegrationsList(items: controller.catalog)
+          }
+        }
+        Text(
+          "Le autorizzazioni e le domande compaiono in Sessioni. Puoi approvare una richiesta alla volta, rifiutarla o fermare il lavoro. Il browser Orbit viene collegato separatamente a ogni sessione."
+        )
+        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+      }
       Card("Navigazione web") {
         ControlRow("Browser per i lavori Codex") {
           Toggle("Browser", isOn: controller.binding(\.browserEnabled))

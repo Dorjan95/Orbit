@@ -62,6 +62,7 @@ import OrbitCore
         for await event in process.events(for: invocation) {
           guard let self else { return }
           switch event {
+          case .started: break
           case .output(let line):
             if let data = line.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

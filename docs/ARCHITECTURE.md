@@ -8,6 +8,8 @@ Orbit è un package Swift con due moduli e due target di test.
 | `Storage.swift` | Stato JSON atomico, segreto Fish e importazione del vecchio formato dati |
 | `ProcessStream.swift` | Lancio senza shell, stdin, drenaggio concorrente stdout/stderr, cancellazione |
 | `CLI.swift` | Ricerca degli eseguibili, argomenti Codex/Claude e decoding degli eventi JSONL |
+| `CodexSession.swift`, `CodexProtocol.swift` | Trasporto app-server, richieste interattive, validazione dei moduli e catalogo MCP |
+| `PromptViews.swift` | Autorizzazioni, domande, moduli e connessioni nelle schede SwiftUI |
 | `Routing.swift` | Prompt dell’interprete, schema JSON e validazione dei riferimenti |
 | `Services.swift` | Client Fish e discovery dei modelli Ollama/LM Studio |
 | `OrbitDesktop/Controller.swift` | Coordinamento sul MainActor, limite di concorrenza e code per sessione |
@@ -75,6 +77,14 @@ La navigazione usa Playwright MCP 0.0.83 e MCP SDK 1.32.1, con dipendenze blocca
 
 Il browser è un contesto Chrome persistente per ID sessione, gestito dall’host e riutilizzato dai client MCP successivi. La fine di un turno CLI non chiude il contesto; un login manuale o una domanda possono quindi essere completati prima di riprendere la stessa sessione. La chiusura della scheda sessione o dell’app termina i processi gestiti. Ogni sessione concorrente ha un profilo distinto e non importa i dati del Chrome personale. Il server rifiuta strumenti esterni all’elenco di navigazione e interazione, tra cui esecuzione arbitraria di JavaScript e upload.
 
-Gli strumenti dell’host Orbit sono approvati nella configurazione del solo server `orbit_browser`, così `codex exec` può navigare senza richieste CLI non gestibili in background. La sandbox dei file del worker conserva la scelta del progetto. L’host aggiunge una verifica degli elementi prima delle interazioni: usa i riferimenti dello snapshot, blocca campi riconoscibili come credenziali e chiede conferma nell’app per invii riconoscibili. La risposta alla conferma usa un endpoint locale autenticato e scade dopo 90 secondi. È una protezione aggiuntiva, non una classificazione completa degli effetti di ogni sito. Il contesto Chrome mantiene la sandbox Chromium attiva.
+Gli strumenti dell’host Orbit sono approvati nella configurazione del solo server `orbit_browser`, così il browser può navigare mentre il suo host mostra le proprie conferme native. La sandbox dei file del worker conserva la scelta del progetto. L’host aggiunge una verifica degli elementi prima delle interazioni: usa i riferimenti dello snapshot, blocca campi riconoscibili come credenziali e chiede conferma nell’app per invii riconoscibili. La risposta alla conferma usa un endpoint locale autenticato e scade dopo 90 secondi. È una protezione aggiuntiva, non una classificazione completa degli effetti di ogni sito. Il contesto Chrome mantiene la sandbox Chromium attiva.
 
 I test Swift verificano configurazione del worker, isolamento dell’interprete e assenza di token negli argomenti. Il test Node verifica il protocollo MCP, autenticazione, rifiuto di richieste da pagine web e blocco degli strumenti esclusi. La verifica dell’app comprende la richiesta di apertura di una pagina pubblica e l’ispezione della finestra browser.
+
+## Sessioni Codex interattive
+
+`CodexSession` usa NDJSON bidirezionale su stdio con `codex app-server`. Esegue initialize, thread/start o thread/resume, lettura del catalogo MCP e turn/start. Le notifiche di completamento del turno determinano lo stato del lavoro; l’uscita del processo senza completamento è un errore. Non c’è un fallback automatico a exec che potrebbe duplicare azioni.
+
+Ogni turno ha il proprio processo e browser MCP; il thread ID persiste nella sessione Orbit. Le richieste server sono identificate da connessione, ID JSON, thread e turno, senza condividere autorizzazioni tra repository. Comandi e file ricevono soltanto accept/decline; permessi aggiuntivi usano scope turn. Le domande e i moduli rimangono in memoria e vengono rimossi alla risposta, risoluzione, cancellazione o chiusura. Le risposte ai moduli non sono scritte nei log Orbit; possono comparire nella cronologia del provider se il tool le restituisce al modello.
+
+Il catalogo delle impostazioni usa un thread ephemeral senza avviare un turno del modello. Il catalogo per sessione viene acquisito prima del turno. L’interprete rimane privo di strumenti: invia le richieste operative al worker. I modelli locali senza integrazioni hanno una CODEX_HOME privata e persistente per sessione, con app/plugin/web disabilitati. Il browser esplicitamente abilitato è collegato solo attraverso la configurazione specifica della connessione.

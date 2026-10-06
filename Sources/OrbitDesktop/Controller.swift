@@ -22,6 +22,15 @@ import OrbitCore
   var wakeHeard = ""
   var voiceNeedsPermission = false
   var browserInstalling = false
+  var prompts: [UUID: [AgentPrompt]] = [:]
+  var integrationCatalog: [UUID: [ToolIntegration]] = [:]
+  var catalog: [ToolIntegration] = []
+  var catalogLoading = false
+  var catalogError: String?
+  var catalogLoaded = false
+  var replying: Set<UUID> = []
+  @ObservationIgnored private var codexSessions: [UUID: CodexSession] = [:]
+  @ObservationIgnored private var catalogSession: CodexSession?
   @ObservationIgnored private lazy var browser = BrowserCoordinator(folder: disk.folder)
   var browserReady: Bool { settings.browserEnabled && BrowserSupport.ready(in: disk.folder) }
   var message = ""
@@ -91,7 +100,10 @@ import OrbitCore
           "Non ho copiato la cartella di lavoro generale: \(error.localizedDescription). La cartella precedente è conservata."
       }
     }
-    for i in snapshot.jobs.indices where snapshot.jobs[i].status == .running {
+    for i in snapshot.jobs.indices
+    where snapshot.jobs[i].status == .running
+      || (snapshot.jobs[i].status == .waiting && snapshot.jobs[i].finished == nil)
+    {
       snapshot.jobs[i].status = .failed
       snapshot.jobs[i].activity = "Orbit è stato riaperto. Riprendi questa sessione per continuare."
     }
@@ -100,6 +112,15 @@ import OrbitCore
   var settings: Settings {
     get { snapshot.settings }
     set {
+      if newValue.worker != snapshot.settings.worker
+        || newValue.codexExecutable != snapshot.settings.codexExecutable
+        || newValue.generalDirectory != snapshot.settings.generalDirectory
+      {
+        catalogSession?.cancel()
+        catalogLoaded = false
+        catalog = []
+        catalogError = nil
+      }
       snapshot.settings = newValue
       audio?.configure()
     }
@@ -123,7 +144,9 @@ import OrbitCore
     resetTask = Task { [weak self] in
       try? await Task.sleep(for: .seconds(seconds))
       guard !Task.isCancelled, let self, !isListening, !isInterpreting, !speaking else { return }
-      phase = processes.isEmpty ? .ready : .working
+      phase =
+        prompts.values.contains(where: { !$0.isEmpty })
+        ? .question : processes.isEmpty ? .ready : .working
     }
   }
   func speak(_ text: String, state: MascotState = .responding, announcement: Bool = false) {
@@ -150,7 +173,12 @@ import OrbitCore
     let request = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !request.isEmpty else { return }
     routeTask?.cancel()
+    isInterpreting = false
     transcript = request
+    if let id = session ?? selectedSession, let asks = prompts[id], !asks.isEmpty {
+      answerByVoice(request, job: id, asks: asks)
+      return
+    }
     selectedSession = session ?? selectedSession
     isInterpreting = true
     setPhase(.thinking, replay: true)
@@ -279,6 +307,10 @@ import OrbitCore
     else { return }
     snapshot.jobs[index].hidden = false
     selectedSession = id
+    if let asks = prompts[id], !asks.isEmpty {
+      answerByVoice(prompt, job: id, asks: asks)
+      return
+    }
     if processes[id] != nil || pending.contains(id) {
       snapshot.jobs[index].queued.append(prompt)
       speak("Aggiunto alla coda di \(snapshot.jobs[index].workspaceName).", announcement: true)
@@ -308,8 +340,10 @@ import OrbitCore
       Rispondi nella lingua dell’utente. Riporta il risultato e le verifiche effettivamente eseguite. Se ti serve un input per continuare, inizia la risposta finale con ORBIT_INPUT_REQUIRED: e formula la domanda. Non dichiarare completato un lavoro bloccato.
       """
     do {
-      let invocation = try AgentCLI.worker(
-        job, settings: settings, prompt: prompt, resuming: job.resumeID != nil)
+      let invocation =
+        try job.agent == .codex
+        ? CodexServer.invocation(job, settings: settings, folder: disk.folder)
+        : AgentCLI.worker(job, settings: settings, prompt: prompt, resuming: job.resumeID != nil)
       processes[id] = run
       snapshot.jobs[index].status = .running
       snapshot.jobs[index].result = ""
@@ -324,10 +358,8 @@ import OrbitCore
           do {
             let connection = try await browser.connection(for: id)
             try Task.checkCancellation()
-            invocation = try AgentCLI.worker(
-              job, settings: settings,
-              prompt: prompt + "\n\n" + BrowserSupport.instructions,
-              resuming: job.resumeID != nil, browser: connection)
+            invocation = try CodexServer.invocation(
+              job, settings: settings, folder: disk.folder, browser: connection)
           } catch {
             processes[id] = nil
             tasks[id] = nil
@@ -346,27 +378,68 @@ import OrbitCore
         var exit: Int32 = -1
         var problem: String?
         var needsInput = false
-        for await event in run.events(for: invocation) {
-          guard let i = snapshot.jobs.firstIndex(where: { $0.id == id }) else { break }
-          switch event {
-          case .output(let line):
-            disk.appendLog(line, job: id)
-            for decoded in EventDecoder.decode(line, agent: job.agent) {
-              switch decoded {
-              case .session(let value): snapshot.jobs[i].resumeID = value
-              case .activity(let value): snapshot.jobs[i].activity = String(value.prefix(1000))
-              case .answer(let value): snapshot.jobs[i].result = value
-              case .inputNeeded(let value):
-                snapshot.jobs[i].result = value
-                needsInput = true
-              case .problem(let value): problem = value
+        if job.agent == .codex {
+          let session = CodexSession(process: run)
+          codexSessions[id] = session
+          let text = prompt + (browserReady ? "\n\n" + BrowserSupport.instructions : "")
+          for await event in session.events(invocation: invocation, job: job, prompt: text) {
+            guard let i = snapshot.jobs.firstIndex(where: { $0.id == id }),
+              snapshot.jobs[i].status != .cancelled
+            else { continue }
+            switch event {
+            case .session(let value): snapshot.jobs[i].resumeID = value
+            case .activity(let value):
+              snapshot.jobs[i].activity = String(value.prefix(1000))
+              disk.appendLog(value, job: id)
+            case .answer(let value): snapshot.jobs[i].result = value
+            case .diagnostic(let value): disk.appendLog(value, job: id)
+            case .integrations(let value): integrationCatalog[id] = value
+            case .request(let ask):
+              prompts[id, default: []].append(ask)
+              snapshot.jobs[i].status = .waiting
+              snapshot.jobs[i].activity = ask.title
+              overlayRequested = true
+              message = "\(job.workspaceName): \(ask.title)"
+              setPhase(.question)
+              speak(
+                message + ". Apri Sessioni per rispondere.", state: .question, announcement: true)
+            case .resolved(let requestID):
+              prompts[id]?.removeAll { $0.id == requestID }
+              if prompts[id]?.isEmpty != false {
+                snapshot.jobs[i].status = .running
+                snapshot.jobs[i].activity = "L’agente sta lavorando"
               }
+            case .finished(let value):
+              problem = value
+              exit = value == nil ? 0 : 1
             }
-          case .diagnostic(let line):
-            disk.appendLog(line, job: id)
-            if !line.isEmpty { snapshot.jobs[i].activity = String(line.prefix(700)) }
-          case .finished(let code): exit = code
-          case .failed(let value): problem = value
+          }
+          codexSessions[id] = nil
+          prompts[id] = nil
+        } else {
+          for await event in run.events(for: invocation) {
+            guard let i = snapshot.jobs.firstIndex(where: { $0.id == id }) else { break }
+            switch event {
+            case .started: break
+            case .output(let line):
+              disk.appendLog(line, job: id)
+              for decoded in EventDecoder.decode(line, agent: job.agent) {
+                switch decoded {
+                case .session(let value): snapshot.jobs[i].resumeID = value
+                case .activity(let value): snapshot.jobs[i].activity = String(value.prefix(1000))
+                case .answer(let value): snapshot.jobs[i].result = value
+                case .inputNeeded(let value):
+                  snapshot.jobs[i].result = value
+                  needsInput = true
+                case .problem(let value): problem = value
+                }
+              }
+            case .diagnostic(let line):
+              disk.appendLog(line, job: id)
+              if !line.isEmpty { snapshot.jobs[i].activity = String(line.prefix(700)) }
+            case .finished(let code): exit = code
+            case .failed(let value): problem = value
+            }
           }
         }
         processes[id] = nil
@@ -383,8 +456,12 @@ import OrbitCore
               of: "ORBIT_INPUT_REQUIRED:", with: ""
             ).trimmingCharacters(in: .whitespacesAndNewlines)
           }
+          needsInput = needsInput && exit == 0 && problem == nil
           snapshot.jobs[i].status =
-            needsInput ? .waiting : exit == 0 && problem == nil ? .completed : .failed
+            exit != 0 || problem != nil ? .failed : needsInput ? .waiting : .completed
+          if let problem, !snapshot.jobs[i].result.isEmpty {
+            snapshot.jobs[i].result += "\n\nErrore: " + problem
+          }
           snapshot.jobs[i].finished = Date()
           snapshot.jobs[i].activity = problem ?? snapshot.jobs[i].status.title
           if snapshot.jobs[i].result.isEmpty {
@@ -416,6 +493,8 @@ import OrbitCore
   }
   func cancelJob(_ id: UUID) {
     pending.removeAll { $0 == id }
+    codexSessions[id]?.cancel()
+    prompts[id] = nil
     processes[id]?.cancel()
     if let i = snapshot.jobs.firstIndex(where: { $0.id == id }) {
       snapshot.jobs[i].status = .cancelled
@@ -433,6 +512,92 @@ import OrbitCore
     for i in snapshot.jobs.indices where !snapshot.jobs[i].status.ongoing {
       snapshot.jobs[i].hidden = true
       browser.close(snapshot.jobs[i].id)
+    }
+  }
+  func respond(
+    _ job: UUID, request: JSONValue, accept: Bool, answers: [String: String] = [:],
+    form: JSONValue = [:]
+  ) {
+    guard !replying.contains(job), let session = codexSessions[job],
+      prompts[job]?.contains(where: { $0.id == request }) == true
+    else { return }
+    replying.insert(job)
+    Task {
+      defer { replying.remove(job) }
+      do { try await session.respond(request, accept: accept, answers: answers, form: form) } catch
+      { self.error = error.localizedDescription }
+    }
+  }
+  private func answerByVoice(_ text: String, job: UUID, asks: [AgentPrompt]) {
+    guard asks.count == 1, let ask = asks.first else {
+      speak(
+        "Ci sono più richieste aperte in questa sessione. Rispondi dal pannello Sessioni.",
+        state: .question)
+      return
+    }
+    selectedSession = job
+    if ask.kind == .questions, ask.questions.count == 1, let question = ask.questions.first,
+      !question.secret
+    {
+      respond(job, request: ask.id, accept: true, answers: [question.id: text])
+      return
+    }
+    let normalized = text.lowercased().trimmingCharacters(
+      in: .whitespacesAndNewlines.union(.punctuationCharacters))
+    if ["rifiuta", "non approvare", "annulla richiesta"].contains(normalized) {
+      respond(job, request: ask.id, accept: false)
+    } else if [.command, .files, .permissions].contains(ask.kind),
+      ["approva", "autorizza"].contains(normalized)
+    {
+      respond(job, request: ask.id, accept: true)
+    } else {
+      speak(
+        "\(ask.title). Leggi la richiesta in Sessioni e usa i pulsanti, oppure di’ approva o rifiuta per questa autorizzazione.",
+        state: .question)
+    }
+  }
+  func refreshIntegrations() {
+    guard !catalogLoading else { return }
+    catalogLoading = true
+    catalogError = nil
+    let choice = settings.worker
+    let executable = settings.codexExecutable
+    let general = settings.generalDirectory
+    Task {
+      defer {
+        catalogLoading = false
+        catalogSession = nil
+      }
+      do {
+        let directory = (settings.generalDirectory as NSString).expandingTildeInPath
+        let job = Job(
+          workspace: Workspace(name: "Connessioni", directory: directory), request: "",
+          model: settings.worker)
+        let invocation = try CodexServer.invocation(job, settings: settings, folder: disk.folder)
+        let session = CodexSession()
+        catalogSession = session
+        for await event in session.events(
+          invocation: invocation, job: job, prompt: "", inspectOnly: true)
+        {
+          guard settings.worker == choice, settings.codexExecutable == executable,
+            settings.generalDirectory == general
+          else { continue }
+          switch event {
+          case .integrations(let value):
+            catalog = value
+            catalogLoaded = true
+          case .finished(let failure): if let failure { catalogError = failure }
+          case .diagnostic(let value):
+            if value.contains("autenticazione") { catalogError = value }
+          default: break
+          }
+        }
+        // Inspection does not create a local conversation to retain.
+        if job.model.provider.local && !job.model.integrations {
+          try? FileManager.default.removeItem(
+            at: disk.folder.appendingPathComponent("codex-local/\(job.id.uuidString)"))
+        }
+      } catch { catalogError = error.localizedDescription }
     }
   }
   func installBrowser() {
@@ -468,8 +633,13 @@ import OrbitCore
       self.error = error.localizedDescription
       return
     }
+    let localHome = disk.folder.appendingPathComponent("codex-local/\(job.id.uuidString)")
+    let environment =
+      job.agent == .codex && job.model.provider.local && !job.model.integrations
+        && FileManager.default.fileExists(atPath: localHome.path)
+      ? "env CODEX_HOME=\(quote(localHome.path)) " : ""
     let command =
-      "#!/bin/zsh\ncd -- \(quote(invocation.directory.path)) || exit 1\nexec \(quote(invocation.executable.path)) \(invocation.arguments.map(quote).joined(separator: " "))\n"
+      "#!/bin/zsh\ncd -- \(quote(invocation.directory.path)) || exit 1\nexec \(environment)\(quote(invocation.executable.path)) \(invocation.arguments.map(quote).joined(separator: " "))\n"
     let file = disk.folder.appendingPathComponent("terminal-\(job.id).command")
     do {
       try Data(command.utf8).write(to: file)
@@ -490,6 +660,8 @@ import OrbitCore
   }
   func shutdown() {
     routeTask?.cancel()
+    catalogSession?.cancel()
+    for session in codexSessions.values { session.cancel() }
     browser.stop()
     audio?.stop()
     for process in processes.values { process.cancel() }

@@ -52,3 +52,40 @@ final class LiveCLITests: XCTestCase {
       })
   }
 }
+
+@MainActor final class LiveAppServerTests: XCTestCase {
+  func testRealInteractiveThreadKeepsContextOnResume() async throws {
+    guard ProcessInfo.processInfo.environment["ORBIT_LIVE_TESTS"] == "1" else {
+      throw XCTSkip("Opt-in real app-server test uses the existing Codex CLI login")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "orbit-appserver-live-\(UUID())")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var job = Job(
+      workspace: Workspace(name: "Fixture", directory: root.path, access: .readOnly), request: "",
+      model: ModelChoice())
+    var answers: [String] = []
+    for prompt in [
+      "Remember this marker: orbit-7319. Reply only with that marker. Do not read files or use tools.",
+      "What marker did I ask you to remember? Reply only with the marker, without tools.",
+    ] {
+      let session = CodexSession()
+      let invocation = try CodexServer.invocation(job, settings: Settings(), folder: root)
+      for await event in session.events(invocation: invocation, job: job, prompt: prompt) {
+        switch event {
+        case .session(let id):
+          if let previous = job.resumeID { XCTAssertEqual(id, previous) }
+          job.resumeID = id
+        case .answer(let value): answers.append(value)
+        case .request(let ask): try await session.respond(ask.id, accept: false)
+        case .finished(let error): XCTAssertNil(error)
+        default: break
+        }
+      }
+    }
+    XCTAssertNotNil(job.resumeID)
+    XCTAssertEqual(answers.count, 2)
+    XCTAssertTrue(answers.allSatisfy { $0.contains("orbit-7319") })
+  }
+}

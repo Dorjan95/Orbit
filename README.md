@@ -103,7 +103,13 @@ Con cinque repository puoi avere cinque agenti attivi. “Continua il lavoro su 
 - **Serve un input**: puoi rispondere alla domanda e continuare con lo stesso contesto.
 - **Completata / Non riuscita / Annullata**: risultato consultabile e sessione riprendibile quando il CLI ha fornito un ID.
 
+Le sessioni Codex usano una connessione bidirezionale al protocollo [Codex App Server](https://learn.chatgpt.com/docs/app-server). Una richiesta di autorizzazione o una domanda compare direttamente nella scheda del lavoro, senza terminare la conversazione. Puoi **Approva una volta**, **Rifiuta**, rispondere alle domande o compilare un modulo MCP. Per autorizzazioni URL, apri la pagina, completa il passaggio nel browser e conferma. Le richieste non supportate rimangono rifiutabili; Orbit non le approva automaticamente.
+
+**Rispondi** seleziona il lavoro: puoi rispondere a voce a una domanda singola non riservata oppure dire **«approva»** / **«rifiuta»** per un’autorizzazione di comando, file o permessi. Un generico «sì» non approva queste autorizzazioni. Moduli, domande riservate e richieste multiple si completano dal pannello. Ogni conferma riguarda soltanto la richiesta indicata; i permessi aggiuntivi durano fino alla fine della richiesta corrente. **Accesso completo** conserva invece il bypass esplicitamente scelto nelle impostazioni del progetto.
+
 Una richiesta aggiunta a un agente in corso aspetta il completamento del suo turno. Se il turno fallisce o richiede un input, la coda non viene eseguita automaticamente: risolvi prima il problema.
+
+Una domanda interattiva mantiene occupato lo slot del lavoro. **Ferma** annulla la connessione e le richieste pendenti di quella sessione. Le autorizzazioni non vengono salvate né riapprovate dopo il riavvio; devi riprendere il lavoro e valutare le nuove richieste.
 
 Il pannello flottante si nasconde quando apri la finestra principale e ritorna alla chiusura se era stato richiesto. **⇧⌘O**, mentre la finestra principale è aperta, porta alla sezione Sessioni. Le due scorciatoie sono personalizzabili.
 
@@ -121,11 +127,21 @@ In **Modelli** scegli separatamente il modello dell’interprete e quello dei la
 | Ollama | Installa un modello compatibile, avvia Ollama, premi Aggiorna | `127.0.0.1:11434` |
 | LM Studio | Carica un modello compatibile e avvia il Local Server | `127.0.0.1:1234` |
 
-Orbit usa `codex exec --oss --local-provider` per i modelli locali. Non scarica automaticamente modelli. Il nome deve corrispondere a quello esposto dal provider. Qualità delle decisioni e velocità dipendono dal modello e dall’hardware.
+Per i lavori Orbit usa `codex app-server` con il provider Ollama o LM Studio; l’interprete isolato usa `codex exec --oss --local-provider`. Non scarica automaticamente modelli. Il nome deve corrispondere a quello esposto dal provider. Qualità delle decisioni e velocità dipendono dal modello e dall’hardware.
 
 Per i lavori locali puoi abilitare le integrazioni del tuo CLI. Quando sono disabilitate, Orbit non carica la configurazione utente, i plugin, le app o la ricerca web di Codex. L’interprete rimane isolato in entrambi i casi. Claude usa il proprio account CLI; questi selettori locali si applicano a Codex.
 
+Con le integrazioni disabilitate, ogni sessione locale usa una cartella `codex-local/<sessione>` nei dati Orbit: non modifica la configurazione condivisa del tuo CLI. Il browser Orbit, se abilitato separatamente, resta disponibile anche in questa modalità.
+
 Scegliere un modello locale riguarda l’AI, non tutti i servizi: Fish Audio invia il testo da pronunciare al suo servizio. Per un percorso vocale senza Fish, rimuovi la chiave e usa la voce di sistema; Speech di Apple può usare il servizio Apple quando il riconoscimento sul dispositivo non è supportato.
+
+## MCP, skill e plugin Codex
+
+I lavori cloud ereditano l’account e la configurazione del CLI installato, compresa la sua cartella `CODEX_HOME` quando impostata. Un MCP configurato nel CLI può quindi essere usato anche da Orbit, con gli stessi requisiti di autenticazione e le regole gestite da Codex. La disponibilità dipende dalla cartella del progetto e dalla configurazione del runtime: un collegamento visibile soltanto nell’interfaccia desktop non diventa automaticamente uno strumento del CLI.
+
+Apri **Modelli → Integrazioni Codex → Verifica connessioni** per leggere l’elenco MCP e gli strumenti disponibili nella cartella generale per i nuovi lavori. Ogni scheda sessione mostra il catalogo rilevato per quel lavoro. L’ispezione non invia una richiesta al modello. Per autenticare o riconfigurare un server, usa il CLI Codex e poi verifica nuovamente le connessioni.
+
+I lavori possono caricare le skill e i plugin supportati dal CLI. Orbit non replica gli strumenti interni del desktop Codex, i suoi connettori disponibili soltanto nel client o la gestione grafica delle chat. Claude mantiene il flusso CLI precedente. Il collegamento interattivo è stato verificato con **Codex CLI 0.160.1** e usa il protocollo app-server, ancora indicato come sperimentale dal CLI; aggiornamenti incompatibili richiedono l’aggiornamento del client Orbit. Se l’avvio fallisce, Orbit mostra l’errore e non riesegue il lavoro con un secondo backend.
 
 ## Navigazione web
 
@@ -196,11 +212,12 @@ swift build
 swift test
 # Facoltativo: test reale con il login Codex locale
 ORBIT_LIVE_TESTS=1 swift test --filter LiveCLITests
+ORBIT_LIVE_TESTS=1 swift test --filter LiveAppServerTests
 # Rigenera le schermate con dati dimostrativi, senza aprire finestre
 swift run Orbit --render-docs docs/images
 ```
 
-I test verificano wake phrase, dati incompleti, importazione, validazione delle decisioni, parsing degli eventi, cancellazione dei processi, gestione dei due canali di output, ricerca Fish e fallback, provider locali, asset della mascotte e coordinamento di cinque lavori con CLI simulati. Il test reale è opt-in e usa l’account Codex locale; la CI non richiede credenziali.
+I test verificano wake phrase, dati incompleti, importazione, validazione delle decisioni, parsing degli eventi, cancellazione dei processi, gestione dei due canali di output, ricerca Fish e fallback, provider locali, asset della mascotte e coordinamento di cinque lavori con CLI simulati, richieste RPC simultanee con ID uguali, conferme vocali esplicite, moduli MCP, permessi limitati al turno e ripresa interattiva del contesto. Il test reale è opt-in e usa l’account Codex locale; la CI non richiede credenziali.
 
 Il battito delle mani e l’interruzione vocale sono sperimentali. La pausa delle notifiche vocali in base alla modalità Full immersion di macOS non è ancora implementata nella nuova versione. L’app non è ancora notarizzata: questa prima release è destinata a compilazione e verifica locale.
 

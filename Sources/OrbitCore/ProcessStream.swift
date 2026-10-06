@@ -19,6 +19,7 @@ public struct Invocation: Sendable {
   }
 }
 public enum ProcessSignal: Sendable {
+  case started
   case output(String)
   case diagnostic(String)
   case finished(Int32)
@@ -29,6 +30,8 @@ public final class ProcessStream: @unchecked Sendable {
   private let lock = NSLock()
   private var child: Process?
   private var cancelled = false
+  private var stdin: FileHandle?
+  private let writes = DispatchQueue(label: "orbit.process.stdin")
   public init() {}
   public func cancel() {
     lock.lock()
@@ -44,7 +47,34 @@ public final class ProcessStream: @unchecked Sendable {
       if getpgid(pid) == pid { kill(-pid, SIGKILL) } else { kill(pid, SIGKILL) }
     }
   }
-  public func events(for invocation: Invocation) -> AsyncStream<ProcessSignal> {
+  public func send(_ line: String) async throws {
+    try await withCheckedThrowingContinuation { (reply: CheckedContinuation<Void, Error>) in
+      writes.async { [self] in
+        lock.lock()
+        let handle = cancelled ? nil : stdin
+        lock.unlock()
+        do {
+          guard let handle else {
+            throw AgentError.execution("La connessione all’agente è chiusa.")
+          }
+          try handle.write(contentsOf: Data((line + "\n").utf8))
+          reply.resume()
+        } catch { reply.resume(throwing: error) }
+      }
+    }
+  }
+  public func closeInput() {
+    writes.async { [self] in
+      lock.lock()
+      let handle = stdin
+      stdin = nil
+      lock.unlock()
+      try? handle?.close()
+    }
+  }
+  public func events(for invocation: Invocation, interactive: Bool = false) -> AsyncStream<
+    ProcessSignal
+  > {
     AsyncStream { continuation in
       DispatchQueue.global(qos: .userInitiated).async { [self] in
         let process = Process()
@@ -76,6 +106,12 @@ public final class ProcessStream: @unchecked Sendable {
         let stopAfterLaunch = cancelled
         lock.unlock()
         if stopAfterLaunch { cancel() }
+        if interactive {
+          lock.lock()
+          stdin = input.fileHandleForWriting
+          lock.unlock()
+          continuation.yield(.started)
+        }
         let readers = DispatchGroup()
         for (pipe, diagnostic) in [(output, false), (errors, true)] {
           readers.enter()
@@ -85,6 +121,12 @@ public final class ProcessStream: @unchecked Sendable {
               let bytes = pipe.fileHandleForReading.availableData
               if bytes.isEmpty { break }
               pending.append(bytes)
+              if interactive && pending.count > 16 * 1024 * 1024 {
+                continuation.yield(
+                  .failed("Una risposta del protocollo Codex supera il limite di 16 MiB."))
+                self.cancel()
+                break
+              }
               while let newline = pending.firstIndex(of: 10) {
                 let line = String(decoding: pending[..<newline], as: UTF8.self)
                 pending.removeSubrange(...newline)
@@ -99,12 +141,15 @@ public final class ProcessStream: @unchecked Sendable {
             readers.leave()
           }
         }
-        DispatchQueue.global().async {
-          try? input.fileHandleForWriting.write(contentsOf: Data(invocation.input.utf8))
-          try? input.fileHandleForWriting.close()
+        if !interactive {
+          DispatchQueue.global().async {
+            try? input.fileHandleForWriting.write(contentsOf: Data(invocation.input.utf8))
+            try? input.fileHandleForWriting.close()
+          }
         }
         process.waitUntilExit()
         readers.wait()
+        closeInput()
         continuation.yield(.finished(process.terminationStatus))
         continuation.finish()
         lock.lock()
@@ -121,6 +166,7 @@ public final class ProcessStream: @unchecked Sendable {
       for await event in events(for: invocation) {
         try Task.checkCancellation()
         switch event {
+        case .started: break
         case .output(let line): lines.append(line)
         case .diagnostic(let line): diagnostics.append(line)
         case .failed(let message): throw AgentError.execution(message)
