@@ -133,7 +133,7 @@ Per i lavori locali puoi abilitare le integrazioni del tuo CLI. Quando sono disa
 
 Con le integrazioni disabilitate, ogni sessione locale usa una cartella `codex-local/<sessione>` nei dati Orbit: non modifica la configurazione condivisa del tuo CLI. Il browser Orbit, se abilitato separatamente, resta disponibile anche in questa modalità.
 
-Scegliere un modello locale riguarda l’AI, non tutti i servizi: Fish Audio invia il testo da pronunciare al suo servizio. Per un percorso vocale senza Fish, rimuovi la chiave e usa la voce di sistema; Speech di Apple può usare il servizio Apple quando il riconoscimento sul dispositivo non è supportato.
+Scegliere un modello locale riguarda l’AI, non tutti i servizi: Fish Audio invia il testo da pronunciare al suo servizio. Per leggere le risposte senza Fish, scegli **Voce → Servizio vocale → Voce di sistema · Apple**; puoi conservare la chiave Fish per usarla in seguito. Speech di Apple può usare il servizio Apple quando il riconoscimento sul dispositivo non è supportato.
 
 ## MCP, skill e plugin Codex
 
@@ -155,15 +155,23 @@ Il collegamento tra CLI e browser usa MCP su un indirizzo locale con un token te
 
 Orbit blocca l’inserimento automatico nei campi riconoscibili come password o codici di accesso e mostra una conferma per invii di moduli e pulsanti riconoscibili come pubblicazioni, invii o acquisti. Questa verifica integra le istruzioni dell’agente: non classifica ogni possibile azione di ogni sito. La lettura e la normale navigazione non richiedono una conferma per ogni passaggio.
 
+## Voce di sistema Apple
+
+In **Voce → Servizio vocale** scegli **Voce di sistema · Apple**, poi seleziona una voce e premi **Prova la voce**. Orbit elenca le voci rese disponibili da macOS nella lingua di dettatura; **Mostra tutte le lingue** estende l’elenco. **Automatica** usa la voce predefinita dell’API Apple per quella lingua. La scelta viene conservata anche dopo la chiusura dell’app.
+
+Le voci Siri vengono indicate solo quando macOS le espone all’app: la voce dell’assistente Siri può essere diversa da quelle disponibili per leggere testo nelle applicazioni. **Gestisci voci macOS** apre le impostazioni di Accessibilità; dopo aver aggiunto una voce, torna in Orbit e premi **Aggiorna voci**. [Guida Apple alle voci di sistema](https://support.apple.com/it-it/guide/mac-help/mchlp2290/mac).
+
+Con il servizio Apple selezionato, Orbit non invia il testo delle risposte a Fish Audio, anche se la chiave Fish resta salvata. Puoi regolare la velocità e interrompere l’anteprima con **Ferma**. Se una voce salvata non è più disponibile, Orbit lo segnala e usa quella automatica.
+
 ## Voce Fish Audio
 
-1. Inserisci e salva la chiave API in **Voce**.
+1. In **Voce → Servizio vocale**, scegli **Fish Audio**, poi inserisci e salva la chiave API.
 2. Cerca per nome o incolla un link come `https://fish.audio/app/text-to-speech/?modelId=<ID>`.
 3. Premi **Usa voce** e **Prova la voce**.
 
 Il link diretto recupera i metadati della voce anche se la ricerca per titolo non la restituisce. La ricerca supporta pagine successive. Una voce non accessibile al tuo account può comunque essere rifiutata dall’API.
 
-Il modello **Automatico** prova S2.1 Pro e passa a `s2.1-pro-free` se il servizio risponde con HTTP 402. Se scegli esplicitamente un modello, Orbit rispetta quella scelta. I modelli a pagamento possono consumare credito Fish. Se abilitato, il fallback legge la risposta con la voce di sistema quando Fish non è disponibile.
+Il modello **Automatico** prova S2.1 Pro e passa a `s2.1-pro-free` se il servizio risponde con HTTP 402. Se scegli esplicitamente un modello, Orbit rispetta quella scelta. I modelli a pagamento possono consumare credito Fish. Se abilitato, il fallback legge la risposta con la voce scelta in **Voce Apple di riserva** quando Fish non è disponibile. Senza una chiave Fish salvata, Orbit usa la voce Apple.
 
 ## Aero: la mascotte 3D
 

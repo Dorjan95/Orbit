@@ -25,8 +25,18 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
   private var lastPeak = Date.distantPast
   private var lastLoud = false
   private var waitingSpeech: [(text: String, state: MascotState)] = []
-  init(_ controller: OrbitController) {
+  private let fishSpeech: (String, Settings, String) async throws -> Data
+  private let systemSpeech: ((AVSpeechUtterance) -> Void)?
+  init(
+    _ controller: OrbitController,
+    fishSpeech: @escaping (String, Settings, String) async throws -> Data = {
+      try await FishClient(token: $2).speech($0, settings: $1)
+    },
+    systemSpeech: ((AVSpeechUtterance) -> Void)? = nil
+  ) {
     self.controller = controller
+    self.fishSpeech = fishSpeech
+    self.systemSpeech = systemSpeech
     super.init()
     synthesizer.delegate = self
   }
@@ -265,9 +275,9 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
     let key = controller.disk.credential()
     speechTask = Task { [weak self] in
       guard let self else { return }
-      if let key, !key.isEmpty {
+      if settings.speechProvider == .fish, let key, !key.isEmpty {
         do {
-          let data = try await FishClient(token: key).speech(text, settings: settings)
+          let data = try await fishSpeech(text, settings, key)
           guard !Task.isCancelled else { return }
           let player = try AVAudioPlayer(data: data)
           self.player = player
@@ -288,9 +298,13 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
       }
       guard !Task.isCancelled else { return }
       let utterance = AVSpeechUtterance(string: text)
-      utterance.voice = AVSpeechSynthesisVoice(language: settings.language)
+      utterance.voice = SystemVoices.resolve(settings.systemVoiceID, language: settings.language)
       utterance.rate = Float(min(0.6, max(0.25, settings.speechSpeed * 0.46)))
-      synthesizer.speak(utterance)
+      if let systemSpeech {
+        systemSpeech(utterance)
+      } else {
+        synthesizer.speak(utterance)
+      }
     }
   }
   func stopSpeaking() {

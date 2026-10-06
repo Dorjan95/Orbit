@@ -12,6 +12,10 @@ public enum Provider: String, Codable, CaseIterable, Sendable {
   }
   public var local: Bool { self != .openai }
 }
+public enum SpeechProvider: String, Codable, CaseIterable, Sendable {
+  case fish, system
+  public var title: String { self == .system ? "Voce di sistema · Apple" : "Fish Audio" }
+}
 public enum Access: String, Codable, CaseIterable, Sendable {
   case readOnly, project, full
   public var title: String {
@@ -166,6 +170,8 @@ public struct Settings: Codable, Sendable {
   public var fishModel = "auto"
   public var speechSpeed = 1.0
   public var systemFallback = true
+  public var speechProvider: SpeechProvider = .fish
+  public var systemVoiceID = ""
   public var configured = false
   public var browserEnabled = false
   public init() {}
@@ -175,7 +181,8 @@ public struct Settings: Codable, Sendable {
       startup, announcements, summaries, openResults, focusSilence, sound, alwaysShowVoice,
       panelOpacity, pushKey, pushModifiers, sessionsKey, sessionsModifiers, mascotVisible,
       mascotHeight, mascotMotion, mascotCaption, mascotPosition, sessionsPosition, clips,
-      fishVoiceID, fishVoiceTitle, fishModel, speechSpeed, systemFallback, configured,
+      fishVoiceID, fishVoiceTitle, fishModel, speechSpeed, systemFallback, speechProvider,
+      systemVoiceID, configured,
       browserEnabled
   }
   public init(from decoder: any Decoder) throws {
@@ -222,6 +229,9 @@ public struct Settings: Codable, Sendable {
     fishModel = try c.decodeIfPresent(String.self, forKey: .fishModel) ?? fishModel
     speechSpeed = try c.decodeIfPresent(Double.self, forKey: .speechSpeed) ?? speechSpeed
     systemFallback = try c.decodeIfPresent(Bool.self, forKey: .systemFallback) ?? systemFallback
+    speechProvider =
+      try c.decodeIfPresent(SpeechProvider.self, forKey: .speechProvider) ?? speechProvider
+    systemVoiceID = try c.decodeIfPresent(String.self, forKey: .systemVoiceID) ?? systemVoiceID
     configured = try c.decodeIfPresent(Bool.self, forKey: .configured) ?? configured
     browserEnabled = try c.decodeIfPresent(Bool.self, forKey: .browserEnabled) ?? browserEnabled
   }

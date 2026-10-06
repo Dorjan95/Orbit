@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import AppKit
 import OrbitCore
 import SwiftUI
@@ -361,6 +362,8 @@ struct ModelCard: View {
 struct VoiceSettingsView: View {
   @Bindable var controller: OrbitController
   @State private var key = ""
+  @State private var systemVoices: [AVSpeechSynthesisVoice] = []
+  @State private var allLanguages = false
   @State private var query = ""
   @State private var voices: [Voice] = []
   @State private var busy = false
@@ -369,69 +372,102 @@ struct VoiceSettingsView: View {
   @State private var note = ""
   var body: some View {
     VStack(spacing: 20) {
-      Card("Fish Audio") {
-        HStack {
-          SecureField("Chiave API Fish Audio", text: $key).textFieldStyle(.roundedBorder)
-          Button("Salva") {
-            do {
-              try controller.disk.setCredential(key)
-              note = "Chiave salvata sul Mac."
-            } catch { note = error.localizedDescription }
-          }
+      Card("Voce di Orbit") {
+        ControlRow("Servizio vocale") {
+          Picker("Servizio vocale", selection: controller.binding(\.speechProvider)) {
+            ForEach(SpeechProvider.allCases, id: \.self) { Text($0.title).tag($0) }
+          }.frame(width: 230)
         }
         Text(
-          "Senza chiave puoi usare la voce di sistema. La chiave resta nella cartella privata Orbit e non viene condivisa con gli agenti."
-        ).font(.system(size: 11)).foregroundStyle(Palette.muted)
-        HStack {
-          TextField("Cerca una voce o incolla il link Fish Audio", text: $query).textFieldStyle(
-            .roundedBorder
-          ).onSubmit { search(reset: true) }
-          Button(busy ? "Ricerca…" : "Cerca") { search(reset: true) }.disabled(busy || key.isEmpty)
-        }
-        ForEach(voices) { voice in
+          controller.settings.speechProvider == .system
+            ? "Orbit parla con una voce Apple sul Mac. Non usa Fish Audio per leggere le risposte."
+            : "Orbit usa la voce Fish selezionata. Senza una chiave API usa la voce Apple configurata qui sotto."
+        )
+        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+      }
+      if controller.settings.speechProvider == .system {
+        systemVoiceCard
+      } else {
+        Card("Fish Audio") {
           HStack {
-            VStack(alignment: .leading, spacing: 3) {
-              Text(voice.title).fontWeight(.semibold)
-              Text(voice.author).font(.system(size: 11)).foregroundStyle(Palette.muted)
+            SecureField("Chiave API Fish Audio", text: $key).textFieldStyle(.roundedBorder)
+            Button("Salva") {
+              do {
+                try controller.disk.setCredential(key)
+                note = "Chiave salvata sul Mac."
+              } catch { note = error.localizedDescription }
             }
+          }
+          Text(
+            "Senza chiave puoi usare la voce di sistema. La chiave resta nella cartella privata Orbit e non viene condivisa con gli agenti."
+          ).font(.system(size: 11)).foregroundStyle(Palette.muted)
+          HStack {
+            TextField("Cerca una voce o incolla il link Fish Audio", text: $query).textFieldStyle(
+              .roundedBorder
+            ).onSubmit { search(reset: true) }
+            Button(busy ? "Ricerca…" : "Cerca") { search(reset: true) }.disabled(
+              busy || key.isEmpty)
+          }
+          ForEach(voices) { voice in
+            HStack {
+              VStack(alignment: .leading, spacing: 3) {
+                Text(voice.title).fontWeight(.semibold)
+                Text(voice.author).font(.system(size: 11)).foregroundStyle(Palette.muted)
+              }
+              Spacer()
+              Button(controller.settings.fishVoiceID == voice.id ? "Selezionata" : "Usa voce") {
+                controller.settings.fishVoiceID = voice.id
+                controller.settings.fishVoiceTitle = voice.title
+              }.disabled(controller.settings.fishVoiceID == voice.id)
+            }
+          }
+          if more { Button("Altre voci") { search(reset: false) }.disabled(busy) }
+          if !note.isEmpty {
+            Text(note).font(.system(size: 11)).foregroundStyle(Palette.muted).textSelection(
+              .enabled)
+          }
+          Divider()
+          ControlRow("Voce selezionata") {
+            Text(controller.settings.fishVoiceTitle).fontWeight(.semibold)
+          }
+          Text(controller.settings.fishVoiceID).font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(Palette.muted).textSelection(.enabled)
+          ControlRow("Modello vocale") {
+            Picker("Modello", selection: controller.binding(\.fishModel)) {
+              Text("Automatico").tag("auto")
+              Text("S2.1 Pro · gratuito").tag("s2.1-pro-free")
+              Text("S2.1 Pro").tag("s2.1-pro")
+              Text("S2 Pro").tag("s2-pro")
+              Text("S1").tag("s1")
+              Text("Drama 3 · preview").tag("drama-3-preview")
+            }.frame(width: 200)
+          }
+          Text(
+            "Automatico prova S2.1 Pro e passa al tier gratuito se Fish risponde con credito insufficiente. L’uso dei modelli a pagamento può consumare credito Fish Audio."
+          ).font(.system(size: 11)).foregroundStyle(Palette.muted)
+          ControlRow("Usa la voce di sistema se Fish non risponde") {
+            Toggle("Fallback", isOn: controller.binding(\.systemFallback)).toggleStyle(.switch)
+          }
+          HStack {
             Spacer()
-            Button(controller.settings.fishVoiceID == voice.id ? "Selezionata" : "Usa voce") {
-              controller.settings.fishVoiceID = voice.id
-              controller.settings.fishVoiceTitle = voice.title
-            }.disabled(controller.settings.fishVoiceID == voice.id)
+            Link(
+              "Apri Fish Audio",
+              destination: URL(
+                string:
+                  "https://fish.audio/app/text-to-speech/?modelId=\(controller.settings.fishVoiceID)"
+              )!
+            )
           }
         }
-        if more { Button("Altre voci") { search(reset: false) }.disabled(busy) }
-        if !note.isEmpty {
-          Text(note).font(.system(size: 11)).foregroundStyle(Palette.muted).textSelection(.enabled)
-        }
-        Divider()
-        ControlRow("Voce selezionata") {
-          Text(controller.settings.fishVoiceTitle).fontWeight(.semibold)
-        }
-        Text(controller.settings.fishVoiceID).font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(Palette.muted).textSelection(.enabled)
-        ControlRow("Modello vocale") {
-          Picker("Modello", selection: controller.binding(\.fishModel)) {
-            Text("Automatico").tag("auto")
-            Text("S2.1 Pro · gratuito").tag("s2.1-pro-free")
-            Text("S2.1 Pro").tag("s2.1-pro")
-            Text("S2 Pro").tag("s2-pro")
-            Text("S1").tag("s1")
-            Text("Drama 3 · preview").tag("drama-3-preview")
-          }.frame(width: 200)
-        }
-        Text(
-          "Automatico prova S2.1 Pro e passa al tier gratuito se Fish risponde con credito insufficiente. L’uso dei modelli a pagamento può consumare credito Fish Audio."
-        ).font(.system(size: 11)).foregroundStyle(Palette.muted)
+        if controller.settings.systemFallback || key.isEmpty { systemVoiceCard }
+      }
+      Card("Ascolta un’anteprima") {
         ControlRow("Velocità") {
           Slider(value: controller.binding(\.speechSpeed), in: 0.5...2).frame(width: 200)
           Text(
             controller.settings.speechSpeed.formatted(.number.precision(.fractionLength(1))) + "×"
-          ).font(.system(size: 11)).monospacedDigit()
-        }
-        ControlRow("Usa la voce di sistema se Fish non risponde") {
-          Toggle("Fallback", isOn: controller.binding(\.systemFallback)).toggleStyle(.switch)
+          )
+          .font(.system(size: 11)).monospacedDigit()
         }
         HStack {
           Button {
@@ -440,16 +476,80 @@ struct VoiceSettingsView: View {
             Label("Prova la voce", systemImage: "play.fill")
           }
           Button("Ferma") { controller.audio?.stopSpeaking() }
-          Spacer()
-          Link(
-            "Apri Fish Audio",
-            destination: URL(
-              string:
-                "https://fish.audio/app/text-to-speech/?modelId=\(controller.settings.fishVoiceID)")!
-          )
         }
       }
-    }.onAppear { key = controller.disk.credential() ?? "" }
+    }.onAppear {
+      key = controller.disk.credential() ?? ""
+      refreshSystemVoices()
+    }.onChange(of: allLanguages) { _, _ in refreshSystemVoices() }
+      .onChange(of: controller.settings.language) { _, _ in refreshSystemVoices() }
+      .onChange(of: controller.settings.speechProvider) { _, _ in controller.audio?.stopSpeaking() }
+      .onChange(of: controller.settings.systemVoiceID) { _, _ in controller.audio?.stopSpeaking() }
+  }
+  var systemVoiceCard: some View {
+    Card(controller.settings.speechProvider == .system ? "Voci Apple" : "Voce Apple di riserva") {
+      ControlRow("Voce") {
+        Picker("Voce Apple", selection: controller.binding(\.systemVoiceID)) {
+          Text("Automatica · \(controller.settings.language)").tag("")
+          if !controller.settings.systemVoiceID.isEmpty,
+            !systemVoices.contains(where: { $0.identifier == controller.settings.systemVoiceID })
+          {
+            Text(
+              AVSpeechSynthesisVoice(identifier: controller.settings.systemVoiceID)
+                .map(SystemVoices.title) ?? "Voce salvata non disponibile"
+            )
+            .tag(controller.settings.systemVoiceID)
+          }
+          ForEach(systemVoices, id: \.identifier) {
+            Text(SystemVoices.title($0)).tag($0.identifier)
+          }
+        }.frame(maxWidth: 340)
+      }
+      Toggle("Mostra tutte le lingue", isOn: $allLanguages).toggleStyle(.switch)
+      if systemVoices.isEmpty {
+        Text(
+          "Nessuna voce disponibile per questa lingua. Aggiungi una voce nelle impostazioni macOS e premi Aggiorna."
+        )
+        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+      }
+      if !controller.settings.systemVoiceID.isEmpty,
+        AVSpeechSynthesisVoice(identifier: controller.settings.systemVoiceID) == nil
+      {
+        Text(
+          "La voce salvata non è più disponibile. Orbit usa la voce automatica finché non ne scegli un’altra."
+        )
+        .font(.system(size: 12)).foregroundStyle(.orange)
+      }
+      Text(
+        systemVoices.contains(where: SystemVoices.isSiri)
+          ? "Le voci Siri disponibili su questo Mac sono indicate nell’elenco."
+          : "macOS non espone attualmente voci Siri a Orbit per le lingue mostrate. Le voci di Siri possono essere diverse da quelle disponibili alle app."
+      )
+      .font(.system(size: 12)).foregroundStyle(Palette.muted)
+      HStack {
+        Button("Aggiorna voci") { refreshSystemVoices() }
+        Button("Gestisci voci macOS") {
+          NSWorkspace.shared.open(
+            URL(
+              string: "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent"
+            )!)
+        }
+        Link(
+          "Come aggiungere voci",
+          destination: URL(string: "https://support.apple.com/it-it/guide/mac-help/mchlp2290/mac")!)
+      }
+      Text(
+        "Puoi aggiungere voci da Impostazioni di Sistema → Accessibilità → Lettura e voce (Contenuto letto ad alta voce nelle versioni precedenti)."
+      )
+      .font(.system(size: 11)).foregroundStyle(Palette.muted)
+    }
+  }
+  func refreshSystemVoices() {
+    systemVoices =
+      allLanguages
+      ? AVSpeechSynthesisVoice.speechVoices().sorted {
+        SystemVoices.title($0).localizedStandardCompare(SystemVoices.title($1)) == .orderedAscending
+      } : SystemVoices.available(language: controller.settings.language)
   }
   func search(reset: Bool) {
     if reset {
