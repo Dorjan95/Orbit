@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import OrbitCore
 @preconcurrency import Speech
 
 /// Framework callbacks may arrive on arbitrary queues. Create them outside the main actor,
@@ -8,6 +9,12 @@ enum AudioCallbacks {
     let text: String?
     let final: Bool
     let failed: Bool
+    var alternatives: [String] = []
+    var failureMessage: String? = nil
+
+    var wakeText: String? {
+      ([text].compactMap { $0 } + alternatives).first { WakePhrase.command(in: $0) != nil }
+    }
   }
 
   nonisolated static func speechAuthorization(
@@ -44,7 +51,9 @@ enum AudioCallbacks {
     { result, error in
       let update = RecognitionUpdate(
         text: result?.bestTranscription.formattedString,
-        final: result?.isFinal ?? false, failed: error != nil)
+        final: result?.isFinal ?? false, failed: error != nil,
+        alternatives: result?.transcriptions.map(\.formattedString) ?? [],
+        failureMessage: error?.localizedDescription)
       Task { @MainActor in receive(update) }
     }
   }

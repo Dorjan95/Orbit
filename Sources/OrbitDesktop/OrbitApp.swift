@@ -40,7 +40,10 @@ import SwiftUI
     controller.rest(after: 6)
     controller.audio?.configure()
     sync()
-    if !controller.settings.configured || ProcessInfo.processInfo.arguments.contains("--settings") {
+    if !controller.settings.configured
+      || (controller.settings.handsFree && controller.voiceNeedsPermission)
+      || ProcessInfo.processInfo.arguments.contains("--settings")
+    {
       showSettings()
     }
   }

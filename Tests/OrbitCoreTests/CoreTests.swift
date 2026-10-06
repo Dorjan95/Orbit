@@ -10,11 +10,21 @@ final class CoreTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
     return folder
   }
-  func testWakeRequiresGreetingAndExtractsCommand() {
-    XCTAssertNil(WakePhrase.command(in: "Orbit avvia il sito"))
+  func testWakeRecognizesNameWithOptionalGreetingAndExtractsCommand() {
+    XCTAssertEqual(WakePhrase.command(in: "Orbit avvia il sito"), "avvia il sito")
+    XCTAssertEqual(WakePhrase.command(in: "Orbit"), "")
+    XCTAssertEqual(WakePhrase.command(in: "ORBIT!"), "")
     XCTAssertEqual(WakePhrase.command(in: "Hey Orbit, avvia il sito"), "avvia il sito")
     XCTAssertEqual(WakePhrase.command(in: "Ehi òrbit!"), "")
     XCTAssertNil(WakePhrase.command(in: "hey orbital"))
+    XCTAssertNil(WakePhrase.command(in: "l’orbita della terra"))
+    XCTAssertNil(WakePhrase.command(in: "un periodo orbitale"))
+  }
+  func testRecordingOnlyRemovesLeadingActivationPhrase() {
+    XCTAssertEqual(
+      WakePhrase.command(in: "  Hey Orbit, avvia il sito", atStartOnly: true), "avvia il sito")
+    XCTAssertEqual(WakePhrase.command(in: "Orbit apri Docker", atStartOnly: true), "apri Docker")
+    XCTAssertNil(WakePhrase.command(in: "Avvia Orbit in locale", atStartOnly: true))
   }
   func testVoiceLinkCannotChooseAnotherHost() {
     XCTAssertEqual(

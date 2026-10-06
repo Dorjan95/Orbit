@@ -111,7 +111,9 @@ struct OrbitSettingsView: View {
               .foregroundStyle(Palette.accent).padding(13).background(Palette.card, in: Circle())
           }.buttonStyle(.plain).help("Parla con Orbit")
         }
-        if !controller.settings.configured { SetupCard(controller: controller) }
+        if !controller.settings.configured || controller.voiceNeedsPermission {
+          SetupCard(controller: controller)
+        }
         if let notice = controller.migrationNotice {
           HStack {
             Text(notice).font(.system(size: 12))
@@ -178,7 +180,7 @@ struct SetupCard: View {
         VStack(alignment: .leading, spacing: 6) {
           Text("Benvenuto in Orbit").fontWeight(.bold)
           Text(
-            "Attiva microfono e riconoscimento vocale. Poi aggiungi un progetto e usa «hey Orbit» oppure la scorciatoia."
+            "Attiva microfono e riconoscimento vocale. Poi aggiungi un progetto e usa «Orbit» oppure la scorciatoia."
           ).font(.system(size: 12)).foregroundStyle(Palette.muted)
         }
         Spacer()
@@ -247,8 +249,16 @@ struct GeneralView: View {
               }))
         }
         Divider()
-        ControlRow("Si attiva quando dici «hey Orbit»") {
+        ControlRow("Si attiva quando dici «Orbit»") {
           Toggle("Ascolto", isOn: controller.binding(\.handsFree))
+        }
+        if controller.settings.handsFree {
+          Text(controller.wakeStatus)
+            .font(.system(size: 11)).foregroundStyle(Palette.muted)
+          if !controller.wakeHeard.isEmpty {
+            Text("Ultima frase riconosciuta: «\(controller.wakeHeard)»")
+              .font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(2)
+          }
         }
         ControlRow("Anche battendo due volte le mani") {
           Toggle("Battito", isOn: controller.binding(\.claps)).disabled(
@@ -257,7 +267,7 @@ struct GeneralView: View {
         Text(
           "Il rilevamento del battito è sperimentale e dipende dal microfono e dal rumore ambientale."
         ).font(.system(size: 11)).foregroundStyle(Palette.muted)
-        ControlRow("Interrompi la voce dicendo «hey Orbit»") {
+        ControlRow("Interrompi la voce dicendo «Orbit»") {
           Toggle("Interruzione", isOn: controller.binding(\.interruption))
         }
         Divider()
@@ -362,7 +372,7 @@ struct SessionsView: View {
         Card {
           Text("Nessuna sessione attiva").font(.system(size: 17, weight: .bold))
           Text(
-            "Di’ «hey Orbit» e chiedi di lavorare su un progetto. Puoi anche scrivere una richiesta qui sotto."
+            "Di’ «Orbit» e chiedi di lavorare su un progetto. Puoi anche scrivere una richiesta qui sotto."
           ).font(.system(size: 13)).foregroundStyle(Palette.muted)
         }
       }

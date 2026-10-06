@@ -1,10 +1,36 @@
 @preconcurrency import AVFoundation
+import OrbitCore
 @preconcurrency import Speech
 import XCTest
 
 @testable import OrbitDesktop
 
 @MainActor final class AudioCallbackTests: XCTestCase {
+  func testCompletedSetupDoesNotHideMissingSystemPermissions() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "orbit-audio-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let controller = OrbitController(disk: DiskStore(folder: folder), importLegacy: false)
+    controller.settings.configured = true
+    controller.settings.handsFree = false
+    let audio = AudioCoordinator(controller)
+    controller.audio = audio
+    defer { controller.shutdown() }
+    audio.configure()
+    XCTAssertEqual(controller.voiceNeedsPermission, !audio.granted)
+    XCTAssertTrue(controller.settings.configured)
+    XCTAssertFalse(audio.engine.isRunning)
+  }
+  func testWakeUsesAlternativeTranscriptionWithoutChangingCommandText() {
+    let update = AudioCallbacks.RecognitionUpdate(
+      text: "Ehi orbi", final: false, failed: false, alternatives: ["Ehi Orbit", "Ehi orbita"])
+    XCTAssertEqual(update.wakeText, "Ehi Orbit")
+    XCTAssertEqual(update.text, "Ehi orbi")
+    XCTAssertNil(
+      AudioCallbacks.RecognitionUpdate(
+        text: "orbita", final: true, failed: false, alternatives: ["hey orbital"]
+      ).wakeText)
+  }
   func testPermissionCallbackCanArriveOnBackgroundQueue() async {
     for expected in [
       SFSpeechRecognizerAuthorizationStatus.authorized, .denied, .restricted, .notDetermined,

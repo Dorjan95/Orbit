@@ -243,10 +243,12 @@ public struct Snapshot: Codable, Sendable {
 }
 
 public enum WakePhrase {
-  public static func command(in text: String) -> String? {
+  public static func command(in text: String, atStartOnly: Bool = false) -> String? {
+    let prefix = atStartOnly ? #"^\s*"# : ""
     guard
       let range = text.range(
-        of: #"(?i)\b(?:hey|ehi)[\s,.!?;:]+[oòó]rbit\b[\s,.!?;:]*"#, options: .regularExpression)
+        of: "(?i)" + prefix + #"\b(?:(?:hey|ehi|hei|ei)[\s,.!?;:]+)?[oòó]rbit\b[\s,.!?;:]*"#,
+        options: .regularExpression)
     else { return nil }
     let remainder = String(text[range.upperBound...]).trimmingCharacters(
       in: .whitespacesAndNewlines)

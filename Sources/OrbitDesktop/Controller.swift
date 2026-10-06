@@ -18,6 +18,9 @@ import OrbitCore
   }
   var animationEpoch = Date()
   var transcript = ""
+  var wakeStatus = "Ascolto non avviato"
+  var wakeHeard = ""
+  var voiceNeedsPermission = false
   var message = ""
   var error: String?
   var selectedSession: UUID?

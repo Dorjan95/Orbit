@@ -14,7 +14,7 @@ Il codice è MIT. Il progetto è scritto in Swift, usa SwiftUI, AppKit e Reality
 
 ## Cosa puoi fare
 
-- Attivare l’ascolto dicendo **«hey Orbit»**, tenendo premuto **⇧⌘Spazio**, cliccando Aero o scrivendo nel pannello.
+- Attivare l’ascolto dicendo **«Orbit»**, tenendo premuto **⇧⌘Spazio**, cliccando Aero o scrivendo nel pannello.
 - Registrare più cartelle con nomi e soprannomi: “CantiereApp”, “il cantiere”, “il sito”.
 - Affidare lavori a Codex o Claude sul progetto scelto, con permessi configurabili per cartella.
 - Eseguire fino a **sei sessioni simultanee**, anche su repository diverse. I lavori oltre il limite aspettano in coda.
@@ -82,9 +82,11 @@ L’installatore conserva un’eventuale versione precedente come `Orbit.backup-
 2. In **Modelli**, controlla che il CLI sia disponibile e autenticato. Puoi indicarne il percorso manualmente e aprire il login nel terminale.
 3. In **Progetti**, aggiungi una cartella, un nome, eventuali soprannomi e l’agente predefinito.
 4. Scegli i permessi: **Sola lettura**, **Nel progetto** o **Accesso completo**. Quest’ultimo bypassa le conferme del CLI ed è una scelta esplicita per quel progetto.
-5. Prova: **«hey Orbit, nel progetto CantiereApp controlla come avviarlo in locale»**.
+5. Prova: **«Orbit, nel progetto CantiereApp controlla come avviarlo in locale»**.
 
-La frase composta è necessaria: **«Orbit» da solo non attiva l’ascolto**. È riconosciuta anche la variante italiana “ehi Orbit”.
+Basta dire **«Orbit»** per attivare l’ascolto. Sono riconosciute anche le frasi “hey Orbit” ed “ehi Orbit”. Il nome deve essere una parola intera: “orbitale” e “orbita” non attivano l’app.
+
+In **Generale** puoi verificare lo stato del microfono e l’ultima frase riconosciuta mentre il pannello è aperto. Questa indicazione resta in memoria e non viene salvata. Se i permessi di sistema mancano, Orbit mostra nuovamente **Attiva la voce**, anche dopo aver completato la configurazione.
 
 <p align="center"><img src="docs/images/orbit-projects.png" alt="Elenco dei progetti con cartelle, soprannomi, agenti e permessi" width="900"></p>
 

@@ -49,12 +49,20 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
   }
   func configure() {
     guard let controller else { return }
+    controller.voiceNeedsPermission = !granted
     if granted && controller.settings.configured && (controller.settings.handsFree || recording)
       && (!speaking || controller.settings.interruption)
     {
       startRecognition()
     } else {
       endRecognition()
+      if !granted {
+        controller.wakeStatus = "Per attivare la voce, consenti Microfono e Riconoscimento vocale."
+      } else if speaking && !controller.settings.interruption {
+        controller.wakeStatus = "Ascolto sospeso durante la risposta vocale."
+      } else {
+        controller.wakeStatus = "Attivazione vocale disattivata."
+      }
     }
   }
   func startRecognition() {
@@ -62,6 +70,7 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
     let recognizer = SFSpeechRecognizer(locale: Locale(identifier: controller.settings.language))
     guard let recognizer, recognizer.isAvailable else {
       controller.error = "Il riconoscimento vocale non è disponibile per questa lingua."
+      controller.wakeStatus = controller.error!
       return
     }
     self.recognizer = recognizer
@@ -69,12 +78,14 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
     recognitionID = token
     let request = SFSpeechAudioBufferRecognitionRequest()
     request.shouldReportPartialResults = true
+    request.contextualStrings = ["Hey Orbit", "Ehi Orbit", "Orbit"]
     if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
     self.request = request
     let node = engine.inputNode
     let format = node.outputFormat(forBus: 0)
     guard format.sampleRate > 0, format.channelCount > 0 else {
       controller.error = "Non è disponibile un microfono."
+      controller.wakeStatus = controller.error!
       return
     }
     node.installTap(
@@ -86,11 +97,23 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
     recognition = recognizer.recognitionTask(
       with: request,
       resultHandler: AudioCallbacks.recognition { [weak self] update in
-        guard let self, self.recognitionID == token else { return }
-        if let text = update.text { self.receive(text, final: update.final) }
+        guard let self, let controller = self.controller, self.recognitionID == token else {
+          return
+        }
+        if let text = update.text, controller.mainVisible, controller.section == .general,
+          !self.recording
+        {
+          controller.wakeHeard = text
+        }
+        if let text = self.recording ? update.text : update.wakeText {
+          self.receive(text, final: update.final)
+        }
         guard self.recognitionID == token else { return }
         if update.failed || update.final {
           self.endRecognition()
+          controller.wakeStatus =
+            update.failureMessage.map { "Riconoscimento vocale: \($0)" }
+            ?? "Ripristino dell’ascolto…"
           self.renewal?.cancel()
           self.renewal = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
@@ -102,8 +125,12 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
     do {
       engine.prepare()
       try engine.start()
+      controller.wakeStatus =
+        recording
+        ? "Microfono attivo · ti sto ascoltando" : "Microfono attivo · in attesa di «Orbit»"
     } catch {
       controller.error = error.localizedDescription
+      controller.wakeStatus = "Microfono: \(error.localizedDescription)"
       endRecognition()
     }
     renewal?.cancel()
@@ -158,7 +185,7 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
   func receive(_ text: String, final: Bool) {
     guard let controller else { return }
     if recording {
-      command = WakePhrase.command(in: text) ?? text
+      command = WakePhrase.command(in: text, atStartOnly: true) ?? text
       controller.transcript = command
       quietTask?.cancel()
       // Voice-activated commands submit after silence; a held shortcut submits on release.

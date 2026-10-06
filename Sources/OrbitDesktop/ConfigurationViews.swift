@@ -420,7 +420,7 @@ struct MemoryView: View {
     VStack(spacing: 20) {
       Card("Preferenze") {
         Text(
-          "Puoi dire «hey Orbit, ricordati che…». Le preferenze vengono incluse nelle nuove richieste agli agenti."
+          "Puoi dire «Orbit, ricordati che…». Le preferenze vengono incluse nelle nuove richieste agli agenti."
         ).font(.system(size: 12)).foregroundStyle(Palette.muted)
         HStack {
           TextField("Aggiungi una preferenza", text: $newMemory).textFieldStyle(.roundedBorder)
