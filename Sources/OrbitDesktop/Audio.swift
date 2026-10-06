@@ -35,9 +35,7 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
       && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
   }
   func permissions() async {
-    let speech = await withCheckedContinuation { continuation in
-      SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
-    }
+    let speech = await AudioCallbacks.speechAuthorization()
     let mic = await AVCaptureDevice.requestAccess(for: .audio)
     guard let controller else { return }
     if speech == .authorized && mic {
@@ -79,27 +77,19 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
       controller.error = "Non è disponibile un microfono."
       return
     }
-    node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-      request.append(buffer)
-      let values = buffer.floatChannelData?[0]
-      let count = Int(buffer.frameLength)
-      var energy: Float = 0
-      if let values, count > 0 {
-        for i in 0..<count { energy += values[i] * values[i] }
-        energy = sqrt(energy / Float(count))
-      }
-      Task { @MainActor [weak self] in if self?.recognitionID == token { self?.meter(energy) } }
-    }
+    node.installTap(
+      onBus: 0, bufferSize: 1024, format: format,
+      block: AudioCallbacks.microphone(request: request) { [weak self] energy in
+        if self?.recognitionID == token { self?.meter(energy) }
+      })
     tapInstalled = true
-    recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
-      let text = result?.bestTranscription.formattedString
-      let final = result?.isFinal ?? false
-      let failed = error != nil
-      Task { @MainActor [weak self] in
+    recognition = recognizer.recognitionTask(
+      with: request,
+      resultHandler: AudioCallbacks.recognition { [weak self] update in
         guard let self, self.recognitionID == token else { return }
-        if let text { self.receive(text, final: final) }
+        if let text = update.text { self.receive(text, final: update.final) }
         guard self.recognitionID == token else { return }
-        if failed || final {
+        if update.failed || update.final {
           self.endRecognition()
           self.renewal?.cancel()
           self.renewal = Task { [weak self] in
@@ -108,8 +98,7 @@ final class AudioCoordinator: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlay
             self?.configure()
           }
         }
-      }
-    }
+      })
     do {
       engine.prepare()
       try engine.start()
