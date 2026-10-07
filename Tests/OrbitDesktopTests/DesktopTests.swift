@@ -36,6 +36,9 @@ import XCTest
           if 'approval' in text:
             pending='approval'
             send({'id':'approve-1','method':'item/commandExecution/requestApproval','params':{'threadId':thread,'turnId':'turn','itemId':'item','command':'echo reviewed','availableDecisions':['accept','decline']}})
+          elif 'computer-access' in text:
+            pending='cua'
+            send({'id':'cua-1','method':'mcpServer/elicitation/request','params':{'threadId':thread,'turnId':'turn','serverName':'cua_repl','mode':'form','message':'Allow Computer Use to use "WhatsApp"?','requestedSchema':{'type':'object','properties':{}}}})
           elif 'question' in text:
             pending='question'
             send({'id':42,'method':'item/tool/requestUserInput','params':{'threadId':thread,'turnId':'turn','itemId':'q','questions':[{'id':'color','header':'Colore','question':'Quale colore preferisci?'}]}})
@@ -150,6 +153,53 @@ import XCTest
     controller.continueJob(second, prompt: "rifiuta")
     try await waitFor { controller.snapshot.jobs[1].status == .completed }
     XCTAssertTrue(controller.snapshot.jobs[1].result.contains("decline"))
+  }
+  func testGlobalFullAccessAppliesToGeneralAndProjectTurnsAndCanBeRevoked() async throws {
+    let (controller, _) = try setupController()
+    controller.snapshot.workspaces[0].access = .readOnly
+    controller.settings.fullAccess = true
+    controller.start(controller.snapshot.workspaces[0], request: "approval")
+    controller.start(controller.snapshot.workspaces[1], request: "computer-access", general: true)
+    try await waitFor { controller.snapshot.jobs.allSatisfy { $0.status == .completed } }
+    XCTAssertTrue(controller.prompts.isEmpty || controller.prompts.values.allSatisfy(\.isEmpty))
+    XCTAssertEqual(controller.snapshot.jobs.map(\.access), [.full, .full])
+    XCTAssertTrue(controller.snapshot.jobs[0].result.contains("accept"))
+    XCTAssertTrue(controller.snapshot.jobs[1].result.contains("accept"))
+    for workspace in controller.snapshot.workspaces.prefix(2) {
+      let lines = try String(
+        contentsOf: workspace.url.appendingPathComponent("argv.txt"), encoding: .utf8)
+      let requests = try lines.split(separator: "\n").map {
+        try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+      }
+      let start = try XCTUnwrap(requests.first { $0["method"].string == "thread/start" })
+      XCTAssertEqual(start["params"]["approvalPolicy"], "never")
+      XCTAssertEqual(start["params"]["sandbox"], "danger-full-access")
+    }
+    controller.settings.fullAccess = false
+    controller.continueJob(controller.snapshot.jobs[0].id, prompt: "approval")
+    try await waitFor { controller.prompts.values.contains { !$0.isEmpty } }
+    XCTAssertEqual(controller.snapshot.jobs[0].access, .readOnly)
+    controller.continueJob(controller.snapshot.jobs[0].id, prompt: "rifiuta")
+    try await waitFor { controller.snapshot.jobs[0].status == .completed }
+    controller.continueJob(controller.snapshot.jobs[1].id, prompt: "ordinary task")
+    try await waitFor { controller.snapshot.jobs[1].status == .completed }
+    XCTAssertEqual(controller.snapshot.jobs[1].access, .project)
+  }
+  func testFullAccessStillAsksQuestionsAndDoesNotBroadenAnAlreadyRunningTurn() async throws {
+    let (controller, _) = try setupController()
+    controller.start(controller.snapshot.workspaces[0], request: "approval")
+    try await waitFor { controller.prompts.values.contains { !$0.isEmpty } }
+    controller.settings.fullAccess = true
+    XCTAssertEqual(controller.snapshot.jobs[0].access, .project)
+    XCTAssertEqual(controller.prompts[controller.snapshot.jobs[0].id]?.count, 1)
+    controller.continueJob(controller.snapshot.jobs[0].id, prompt: "rifiuta")
+    try await waitFor { controller.snapshot.jobs[0].status == .completed }
+    controller.start(controller.snapshot.workspaces[1], request: "question")
+    try await waitFor { controller.prompts.values.contains { !$0.isEmpty } }
+    XCTAssertEqual(controller.snapshot.jobs[1].access, .full)
+    XCTAssertEqual(controller.prompts[controller.snapshot.jobs[1].id]?.first?.kind, .questions)
+    controller.continueJob(controller.snapshot.jobs[1].id, prompt: "verde")
+    try await waitFor { controller.snapshot.jobs[1].status == .completed }
   }
   func testLiveQuestionResponseAndCancelDoNotResumeAnotherTurn() async throws {
     let (controller, _) = try setupController()

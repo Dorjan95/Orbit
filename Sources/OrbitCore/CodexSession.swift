@@ -158,6 +158,11 @@ public enum CodexSignal: Sendable {
         }
         if turnID == nil { turnID = p["turnId"].string }
         guard waiting[id] == nil else { return }
+        if let result = try ask.automaticResponse(access: job.access) {
+          try await write(["id": id, "result": result])
+          output?.yield(.activity("Accesso completo · \(ask.title) autorizzata"))
+          return
+        }
         waiting[id] = ask
         watchdog?.cancel()
         output?.yield(.request(ask))

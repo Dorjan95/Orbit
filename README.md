@@ -105,7 +105,15 @@ Con cinque repository puoi avere cinque agenti attivi. “Continua il lavoro su 
 
 Le sessioni Codex usano una connessione bidirezionale al protocollo [Codex App Server](https://learn.chatgpt.com/docs/app-server). Una richiesta di autorizzazione o una domanda compare direttamente nella scheda del lavoro, senza terminare la conversazione. Puoi **Approva una volta**, **Rifiuta**, rispondere alle domande o compilare un modulo MCP. Per autorizzazioni URL, apri la pagina, completa il passaggio nel browser e conferma. Le richieste non supportate rimangono rifiutabili; Orbit non le approva automaticamente.
 
-**Rispondi** seleziona il lavoro: puoi rispondere a voce a una domanda singola non riservata oppure dire **«approva»** / **«rifiuta»** per un’autorizzazione di comando, file o permessi. Un generico «sì» non approva queste autorizzazioni. Moduli, domande riservate e richieste multiple si completano dal pannello. Ogni conferma riguarda soltanto la richiesta indicata; i permessi aggiuntivi durano fino alla fine della richiesta corrente. **Accesso completo** conserva invece il bypass esplicitamente scelto nelle impostazioni del progetto.
+**Rispondi** seleziona il lavoro: puoi rispondere a voce a una domanda singola non riservata oppure dire **«approva»** / **«rifiuta»** per un’autorizzazione di comando, file o permessi. Un generico «sì» non approva queste autorizzazioni. Moduli, domande riservate e richieste multiple si completano dal pannello. Ogni conferma riguarda soltanto la richiesta indicata; i permessi aggiuntivi durano fino alla fine della richiesta corrente.
+
+### Accesso completo per Orbit
+
+In **Modelli → Permessi dell’agente → Accesso completo** puoi autorizzare l’esecuzione dei lavori senza conferme ripetute. L’opzione vale per tutti i progetti e per le richieste **Generale**: Codex riceve `approvalPolicy: never` e `danger-full-access`; Claude usa la sua modalità senza richieste di permesso. L’agente può modificare file fuori dalla cartella del progetto ed eseguire comandi con accesso alla rete.
+
+La scelta viene salvata e si applica all’avvio di ogni nuovo turno, anche quando riprendi una sessione. I turni già in corso mantengono i permessi iniziali; completali o fermali prima di riprenderli con la nuova modalità. Quando disattivi l’opzione, i turni successivi tornano ai permessi del progetto, oppure **Nel progetto** per le richieste generali. La scheda della sessione mostra i permessi effettivi del turno.
+
+In questa modalità Orbit accetta anche le richieste senza campi di `cua_repl` che chiedono **Allow Computer Use to use "nome app"?**, come quella per WhatsApp. Questa autorizzazione riguarda l’accesso all’app: non compila domande, login o altri moduli MCP al posto tuo. Le richieste non riconosciute restano visibili. Orbit non modifica la configurazione globale del CLI o i permessi privacy di macOS. L’opzione generale è disattivata per impostazione predefinita; puoi continuare a scegliere **Accesso completo** solo per determinati progetti.
 
 Una richiesta aggiunta a un agente in corso aspetta il completamento del suo turno. Se il turno fallisce o richiede un input, la coda non viene eseguita automaticamente: risolvi prima il problema.
 

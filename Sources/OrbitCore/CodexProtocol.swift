@@ -207,6 +207,22 @@ public struct AgentPrompt: Identifiable, Equatable, Sendable {
     case .unsupported: throw AgentError.execution("Richiesta non supportata.")
     }
   }
+  /// Full access authorizes execution, not answers to arbitrary MCP questions or login flows.
+  public func automaticResponse(access: Access) throws -> JSONValue? {
+    guard access == .full, canAccept else { return nil }
+    if [.command, .files, .permissions].contains(kind) { return try response(accept: true) }
+    // Computer Use asks for application access using an empty form. Match this specific
+    // request, rather than accepting every empty MCP form (which can represent an action).
+    let schema = params["requestedSchema"]
+    guard kind == .form, params["serverName"].string == "cua_repl",
+      schema["type"].string == "object", schema["properties"] == .object([:]),
+      schema["required"].array.isEmpty,
+      let message = params["message"].string,
+      message.range(of: #"^Allow Computer Use to use "[^"\r\n]+"\?$"#, options: .regularExpression)
+        != nil
+    else { return nil }
+    return try response(accept: true, form: [:])
+  }
 }
 /// Only advertise forms we can actually validate. Unsupported schemas stay declinable.
 public enum FormSchema {

@@ -3,6 +3,56 @@ import XCTest
 @testable import OrbitCore
 
 final class CodexProtocolTests: XCTestCase {
+  func testFullAccessOnlyApprovesExecutionAndKnownComputerUseAccess() throws {
+    let command = AgentPrompt(
+      id: 1, method: "item/commandExecution/requestApproval",
+      params: ["availableDecisions": ["accept", "decline"]])
+    XCTAssertNil(try command.automaticResponse(access: .project))
+    XCTAssertEqual(try command.automaticResponse(access: .full), ["decision": "accept"])
+    let permission = AgentPrompt(
+      id: 2, method: "item/permissions/requestApproval",
+      params: ["permissions": ["network": ["enabled": true]]])
+    XCTAssertEqual(
+      try permission.automaticResponse(access: .full),
+      ["permissions": ["network": ["enabled": true]], "scope": "turn"])
+    var params: JSONValue = [
+      "mode": "form", "serverName": "cua_repl",
+      "message": "Allow Computer Use to use \"WhatsApp\"?",
+      "requestedSchema": ["type": "object", "properties": [:]],
+    ]
+    func prompt(_ p: JSONValue) -> AgentPrompt {
+      AgentPrompt(id: "cua", method: "mcpServer/elicitation/request", params: p)
+    }
+    XCTAssertNil(try prompt(params).automaticResponse(access: .readOnly))
+    XCTAssertEqual(
+      try prompt(params).automaticResponse(access: .full),
+      ["action": "accept", "content": [:]])
+    var fields = params.object
+    fields["serverName"] = "other_server"
+    XCTAssertNil(try prompt(.object(fields)).automaticResponse(access: .full))
+    fields = params.object
+    fields["message"] = "Send this message?"
+    XCTAssertNil(try prompt(.object(fields)).automaticResponse(access: .full))
+    fields = params.object
+    fields["requestedSchema"] = ["type": "object", "properties": ["answer": ["type": "string"]]]
+    XCTAssertNil(try prompt(.object(fields)).automaticResponse(access: .full))
+    fields = params.object
+    fields["requestedSchema"] = ["type": "object", "properties": [:], "required": ["missing"]]
+    XCTAssertNil(try prompt(.object(fields)).automaticResponse(access: .full))
+    params = ["mode": "url", "url": "https://example.com/login"]
+    XCTAssertNil(try prompt(params).automaticResponse(access: .full))
+    let question = AgentPrompt(
+      id: 3, method: "item/tool/requestUserInput",
+      params: ["questions": [["id": "q", "question": "Which project?"]]])
+    XCTAssertNil(try question.automaticResponse(access: .full))
+  }
+  func testFullAccessPreferenceIsOptInAndPersists() throws {
+    var settings = try JSONDecoder().decode(Settings.self, from: Data("{}".utf8))
+    XCTAssertFalse(settings.fullAccess)
+    settings.fullAccess = true
+    XCTAssertTrue(
+      try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(settings)).fullAccess)
+  }
   func testApprovalDoesNotGrantPersistentRulesOrBroaderPermissions() throws {
     let command = AgentPrompt(
       id: "server-id", method: "item/commandExecution/requestApproval",

@@ -139,6 +139,7 @@ public struct Settings: Codable, Sendable {
   public var assistant = ModelChoice()
   public var worker = ModelChoice()
   public var maximumJobs = 6
+  public var fullAccess = false
   public var generalDirectory = ""
   public var newProjectsDirectory = "~/Projects"
   public var codexExecutable = ""
@@ -176,7 +177,7 @@ public struct Settings: Codable, Sendable {
   public var browserEnabled = false
   public init() {}
   enum CodingKeys: String, CodingKey {
-    case language, interpreter, assistant, worker, maximumJobs, generalDirectory,
+    case language, interpreter, assistant, worker, maximumJobs, fullAccess, generalDirectory,
       newProjectsDirectory, codexExecutable, claudeExecutable, handsFree, claps, interruption,
       startup, announcements, summaries, openResults, focusSilence, sound, alwaysShowVoice,
       panelOpacity, pushKey, pushModifiers, sessionsKey, sessionsModifiers, mascotVisible,
@@ -193,6 +194,7 @@ public struct Settings: Codable, Sendable {
     assistant = try c.decodeIfPresent(ModelChoice.self, forKey: .assistant) ?? assistant
     worker = try c.decodeIfPresent(ModelChoice.self, forKey: .worker) ?? worker
     maximumJobs = try c.decodeIfPresent(Int.self, forKey: .maximumJobs) ?? maximumJobs
+    fullAccess = try c.decodeIfPresent(Bool.self, forKey: .fullAccess) ?? fullAccess
     generalDirectory =
       try c.decodeIfPresent(String.self, forKey: .generalDirectory) ?? generalDirectory
     newProjectsDirectory =

@@ -57,7 +57,9 @@ struct ProjectsView: View {
               .foregroundStyle(Palette.muted)
           }
           HStack {
-            Text("\(project.agent.rawValue.capitalized) · \(project.access.title)").font(
+            Text(
+              "\(project.agent.rawValue.capitalized) · \(controller.settings.fullAccess ? "Accesso completo (globale)" : project.access.title)"
+            ).font(
               .system(size: 11))
             Spacer()
             Button("Apri cartella") { NSWorkspace.shared.open(project.url) }
@@ -147,6 +149,25 @@ struct ModelsView: View {
   @Bindable var controller: OrbitController
   var body: some View {
     VStack(spacing: 20) {
+      Card("Permessi dell’agente") {
+        ControlRow("Accesso completo") {
+          Toggle("Accesso completo", isOn: controller.binding(\.fullAccess)).toggleStyle(.switch)
+        }
+        Text(
+          controller.settings.fullAccess
+            ? "Orbit può eseguire comandi, modificare file anche fuori dai progetti e usare la rete senza conferme di esecuzione. Computer Use può accedere alle app richieste."
+            : "Ogni progetto usa i propri permessi. Le richieste generali possono modificare solo la cartella di lavoro e chiedono conferma quando serve."
+        )
+        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+        Text(
+          "Si applica alle nuove sessioni e ai turni ripresi, anche senza progetto. I turni già in corso mantengono i loro permessi. Disattivandolo, i nuovi turni tornano ai permessi del progetto."
+        )
+        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+        Text(
+          "Le domande, i login e le altre autorizzazioni richieste dagli MCP restano disponibili nel pannello Sessioni."
+        )
+        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+      }
       Card("Interprete delle richieste") {
         ControlRow("Agente") {
           Picker("Interprete", selection: controller.binding(\.interpreter)) {

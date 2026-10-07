@@ -409,6 +409,8 @@ struct JobCard: View {
       }
       Text(job.request).font(.system(size: 12)).foregroundStyle(Palette.muted).lineLimit(
         expanded ? nil : 3)
+      Label(job.access.title, systemImage: job.access == .full ? "lock.open" : "lock.shield")
+        .font(.system(size: 11)).foregroundStyle(Palette.muted)
       if job.status == .running {
         HStack {
           ProgressView().controlSize(.small)

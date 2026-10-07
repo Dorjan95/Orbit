@@ -330,6 +330,12 @@ import OrbitCore
   }
   private func launch(_ id: UUID) {
     guard let index = snapshot.jobs.firstIndex(where: { $0.id == id }) else { return }
+    let stored = snapshot.jobs[index]
+    let projectAccess =
+      snapshot.workspaces.first(where: { $0.id == stored.workspaceID })?.access
+      ?? (stored.workspaceID == nil ? .project : stored.access)
+    // Snapshot the policy per turn. Changing the global setting never broadens a live turn.
+    snapshot.jobs[index].access = settings.fullAccess ? .full : projectAccess
     let job = snapshot.jobs[index]
     let run = ProcessStream()
     let prompt = """
