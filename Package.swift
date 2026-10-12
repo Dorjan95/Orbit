@@ -2,13 +2,23 @@
 import PackageDescription
 
 let package = Package(
-  name: "Orbit", platforms: [.macOS(.v15)],
-  products: [.executable(name: "Orbit", targets: ["OrbitDesktop"])],
-  targets: [
-    .target(name: "OrbitCore"),
-    .executableTarget(
-      name: "OrbitDesktop", dependencies: ["OrbitCore"], resources: [.copy("Resources")]),
-    .testTarget(name: "OrbitCoreTests", dependencies: ["OrbitCore"]),
-    .testTarget(name: "OrbitDesktopTests", dependencies: ["OrbitDesktop", "OrbitCore"]),
-  ]
+    name: "Orbit",
+    platforms: [.macOS(.v15)],
+    products: [.executable(name: "Orbit", targets: ["Jarvis"])],
+    targets: [
+        .executableTarget(
+            name: "Jarvis",
+            path: "Sources/Jarvis",
+            exclude: ["Info.plist"],
+            resources: [.copy("Resources/orbit-aero.png"), .copy("Resources/OrbitAnimations"), .copy("Resources/OrbitModels")],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "JarvisTests",
+            dependencies: ["Jarvis"],
+            path: "Tests/JarvisTests",
+            resources: [.copy("Fixtures")],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+    ]
 )

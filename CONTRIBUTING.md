@@ -1,13 +1,37 @@
 # Contribuire a Orbit
 
-Apri un’issue descrivendo cosa vuoi ottenere, oppure una pull request con un cambiamento concreto e le verifiche eseguite. Puoi usare italiano o inglese.
+Prima di riutilizzare o contribuire al codice, consulta [LICENSING.md](LICENSING.md):
+il codice ereditato da Jarvis non ha attualmente una licenza open source dichiarata.
 
-Per lavorare sul progetto servono macOS 15+, una toolchain Swift 6 e gli SDK macOS. Usa `swift build` e `swift test`. I test ordinari non richiedono account AI, chiavi Fish o microfono: usano processi e servizi simulati. Il test reale è facoltativo e si abilita con `ORBIT_LIVE_TESTS=1`.
+## Segnalare un problema
 
-Mantieni separati dominio e servizi (`OrbitCore`) dalle finestre, dall’audio e dal rendering (`OrbitDesktop`). Ogni nuova azione deve verificare il destinatario prima di raggiungere il CLI. Evita di cambiare progetto, modello o ID CLI di una sessione già avviata.
+Apri una issue con versione macOS, versione Swift e CLI, provider usato,
+passaggi per riprodurre il comportamento e risultato atteso.
+Per errori vocali, indica se usavi attivazione vocale, scorciatoia o mascotte.
+Per sessioni, indica l'agente e il livello di permessi senza condividere dati privati.
 
-Per il lavoro sulle finestre verifica anche tastiera, più monitor, Riduci movimento, chiusura e riapertura delle impostazioni. La sezione Sessioni e il pannello flottante devono offrire gli stessi dati senza sovrapporsi quando la finestra principale è aperta.
+Non pubblicare chiavi API, token, conversazioni private o log completi non verificati.
+Usa un progetto dimostrativo quando possibile.
 
-Non aggiungere credenziali, preferenze personali, percorsi utente reali, log delle repository o audio di voci di terzi. Le schermate per il README si generano con `swift run Orbit --render-docs docs/images` e dati dimostrativi.
+## Proporre una modifica
 
-Il codice e la documentazione sono MIT; la mascotte ha la licenza indicata in NOTICE.md. Inviando un contributo, assicurati di avere il diritto di distribuirlo con la licenza applicabile al file.
+1. Crea un branch con una modifica circoscritta.
+2. Spiega il problema e il comportamento risultante nella pull request.
+3. Esegui `swift test` e `JARVIS_SIGN=adhoc ./scripts/build-app.sh` su macOS.
+4. Per cambiamenti dell'interfaccia, verifica le schermate, i diversi stati e Riduci movimento.
+5. Per la mascotte, verifica anche le dimensioni minime e il trascinamento su più schermi.
+
+I test reali Codex e Ollama sono facoltativi: non sono necessari per ogni pull request.
+Non modificare o registrare i dati dell'utente per costruire fixture.
+
+## Aggiornare le immagini
+
+Le schermate della documentazione si esportano con dati fittizi:
+
+```sh
+ORBIT_DOCS_OUTPUT="$PWD/docs/images" swift test --filter DocumentationSnapshotTests
+```
+
+I render della mascotte si producono dal modello corrente con Blender;
+`tools/make_readme_images.py` compone il banner e la tavola delle pose con Pillow.
+Non usare i prototipi storici come se rappresentassero la mascotte attuale.

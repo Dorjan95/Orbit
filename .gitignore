@@ -1,9 +1,42 @@
+# Build artifacts
 .build/
 build/
-.swiftpm/
+*.o
+*.dSYM
+*.blend1
+assets/aero/Aero_Runtime.usd*
+assets/aero/textures/
+
+# macOS
 .DS_Store
-.env*
+
+# Xcode / SwiftPM local state
+.swiftpm/
+xcuserdata/
+DerivedData/
+
+# Local env / secrets (the app keeps user data outside this repository)
+.env
+.env.*
+!.env.example
 *.key
 *.pem
 __pycache__/
 *.pyc
+.venv/
+
+# Local prototypes and generated Blender documents; the current GLB is reproducible.
+/assets/aero/*
+!/assets/aero/meshy/
+/assets/aero/meshy/*
+!/assets/aero/meshy/Aero_Meshy_Native.glb
+!/assets/aero/meshy/README.md
+!/assets/aero/meshy/LICENSE.md
+/tools/blender/*
+!/tools/blender/import_native_meshy.py
+!/tools/blender/package_native_meshy.py
+!/tools/blender/render_readme.py
+/docs/orbit-aero.md
+/docs/orbit-aero-thinking.md
+/docs/orbit-aero-blender.md
+/docs/orbit-aero-3d.md

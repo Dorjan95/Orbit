@@ -1,0 +1,23 @@
+name: macOS build and tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    env:
+      JARVIS_SIGN: adhoc
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Toolchain
+        run: swift --version
+      - name: Tests without live services
+        run: swift test
+      - name: Build application
+        run: ./scripts/build-app.sh
