@@ -4,8 +4,16 @@ import Foundation
 
 enum AgentKind: String, Codable, CaseIterable, Sendable, Identifiable {
     case claude, codex
+    /// Decode old snapshots and journals without offering or launching the removed provider.
+    case retiredDeepSeek = "deepseek"
+    static let allCases: [Self] = [.claude, .codex]
+    var isAvailable: Bool { Self.allCases.contains(self) }
     var id: String { rawValue }
-    var displayName: String { self == .claude ? "Claude" : "Codex" }
+    var displayName: String {
+        switch self { case .claude: "Claude"; case .codex: "Codex"; case .retiredDeepSeek: "DeepSeek (storico)" }
+    }
+    static let interpreterCases: [Self] = [.claude, .codex]
+    var cliName: String { isAvailable ? rawValue : "" }
 }
 
 enum PermissionMode: String, Codable, CaseIterable, Sendable, Identifiable {
@@ -14,7 +22,7 @@ enum PermissionMode: String, Codable, CaseIterable, Sendable, Identifiable {
     /// Claude: `--permission-mode bypassPermissions` · Codex: `--dangerously-bypass-approvals-and-sandbox`
     case bypassPermissions
     var id: String { rawValue }
-    var displayName: String { self == .acceptEdits ? "Solo modifiche" : "Senza permessi" }
+    var displayName: String { self == .acceptEdits ? "Nel progetto" : "Accesso completo" }
 }
 
 // MARK: - Projects
@@ -24,10 +32,26 @@ struct Project: Codable, Identifiable, Hashable, Sendable {
     var name: String
     var path: String
     var aliases: [String] = []
-    var defaultAgent: AgentKind = .claude
-    var permissionMode: PermissionMode = .bypassPermissions
+    var defaultAgent: AgentKind = .codex
+    var permissionMode: PermissionMode = .acceptEdits
+    var verificationCommand: String? = nil
 
     var url: URL { URL(fileURLWithPath: (path as NSString).expandingTildeInPath) }
+}
+
+// Legacy project preferences migrate to a supported agent; remote sessions never do.
+extension Project {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        path = try c.decode(String.self, forKey: .path)
+        aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        defaultAgent = try c.decodeIfPresent(AgentKind.self, forKey: .defaultAgent) ?? .codex
+        permissionMode = try c.decodeIfPresent(PermissionMode.self, forKey: .permissionMode) ?? .acceptEdits
+        verificationCommand = try c.decodeIfPresent(String.self, forKey: .verificationCommand)
+        if !defaultAgent.isAvailable { defaultAgent = .codex; permissionMode = .acceptEdits }
+    }
 }
 
 // MARK: - Sessions
@@ -35,6 +59,7 @@ struct Project: Codable, Identifiable, Hashable, Sendable {
 enum SessionStatus: String, Codable, Sendable {
     case running, done, needsInput, failed, cancelled
     var isActive: Bool { self == .running }
+    var isOngoing: Bool { self == .running || self == .needsInput }
     var label: String {
         switch self {
         case .running: "In corso"
@@ -56,10 +81,27 @@ struct Session: Codable, Identifiable, Hashable, Sendable {
     var activity: String = ""      // e.g. "Edit src/Hero.tsx"
     var startedAt: Date = Date()
     var finishedAt: Date? = nil
-    var agentSessionID: String? = nil   // claude session_id / codex thread_id, for --resume
+    var agentSessionID: String? = nil   // CLI-owned remote context
     var resultText: String = ""         // final agent result (truncated)
     var pid: Int32? = nil
     var dismissed: Bool = false
+    var codexBackend: CodexBackend? = nil
+    var executionConfiguration: AgentExecutionConfiguration? = nil
+    var turns: [SessionTurn]? = nil
+    var currentTurnID: UUID? = nil
+    var approvals: [AgentApproval]? = nil
+    var steering: SessionSteering? = nil
+    var workflow: AgentWorkflow? = nil
+
+    var usesRetiredAgent: Bool {
+        !agent.isAvailable || executionConfiguration?.agent.isAvailable == false ||
+            (turns ?? []).contains { !$0.configuration.agent.isAvailable }
+    }
+
+    var pendingApprovals: [AgentApproval] { (approvals ?? []).filter { $0.state == .pending } }
+
+    var queuedTurns: [SessionTurn] { (turns ?? []).filter { $0.state == .queued } }
+    var hasPendingWork: Bool { status.isOngoing || currentTurnID != nil || !queuedTurns.isEmpty }
 
     var elapsed: TimeInterval { (finishedAt ?? Date()).timeIntervalSince(startedAt) }
 }
@@ -67,7 +109,7 @@ struct Session: Codable, Identifiable, Hashable, Sendable {
 // MARK: - Orchestrator contract (§4.2)
 
 enum OrchestratorActionKind: String, Codable, Sendable {
-    case spawn, followup, cancel, status, open, clarify, chitchat, create
+    case spawn, followup, steer, workflow, cancel, status, open, clarify, chitchat, create
 }
 
 struct OrchestratorAction: Codable, Sendable, Equatable {
@@ -90,13 +132,13 @@ struct OrchestratorAction: Codable, Sendable, Equatable {
     }
 
     static let jsonSchema: String = """
-    {"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["spawn","followup","cancel","status","open","clarify","chitchat","create"]},"agent":{"type":["string","null"],"enum":["claude","codex",null]},"project":{"type":["string","null"]},"session_id":{"type":["string","null"]},"task":{"type":["string","null"]},"speak":{"type":"string"},"remember":{"type":["string","null"]},"forget":{"type":["string","null"]},"coding":{"type":["boolean","null"]}},"required":["action","agent","project","session_id","task","speak","remember","forget","coding"]}
+    {"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["spawn","followup","steer","workflow","cancel","status","open","clarify","chitchat","create"]},"agent":{"type":["string","null"],"enum":["claude","codex",null]},"project":{"type":["string","null"]},"session_id":{"type":["string","null"]},"task":{"type":["string","null"]},"speak":{"type":"string"},"remember":{"type":["string","null"]},"forget":{"type":["string","null"]},"coding":{"type":["boolean","null"]}},"required":["action","agent","project","session_id","task","speak","remember","forget","coding"]}
     """
 }
 
 // MARK: - Memory
 
-/// One durable fact the user told Jarvis ("I prefer Tailwind", "call me Albert", "always use Codex for the API project").
+/// One durable fact the user told Orbit ("I prefer Tailwind", "call me Albert", "always use Codex for the API project").
 struct Memory: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var text: String
@@ -123,32 +165,57 @@ struct Hotkey: Codable, Hashable, Sendable {
     static let overlay = Hotkey(keyCode: 31 /* kVK_ANSI_O */, modifiers: 0x0100 | 0x0200)
 }
 
+private enum LegacyWorkflowKeys: String, CodingKey { case workflowDefinition }
+
 struct Settings: Codable, Sendable {
     var pushToTalk: Hotkey = .pushToTalk
     var overlayToggle: Hotkey = .overlay
     var launchAtLogin: Bool = false
     var overlayOpacity: Double = 1.0
+    var showIdlePill: Bool = false
+    var mascotEnabled: Bool = true
+    /// Artwork height in points; the status label sits below it.
+    var mascotSize: Double = 200
+    var mascotOrigin: CGPoint? = nil
+    var mascotAnimations: Bool = true
+    var mascotShowStatus: Bool = true
+    var mascotClipAssignments: [String: String] = [:]
     var speakSummaries: Bool = true
     /// Short spoken progress lines while a session works, not only the summary at the end.
     var speakProgress: Bool = true
-    /// Hands-free: say "Jarvis". The switch is also in the menu bar.
+    /// Hands-free: say "Hey Orbit". The switch is also in the menu bar.
     var handsFree: Bool = true
-    /// macOS echo cancellation on the hands-free mic, needed to talk over Jarvis. Off = Jarvis only listens between replies.
+    /// macOS echo cancellation on the hands-free mic, needed to talk over Orbit. Off = Orbit only listens between replies.
     var echoCancellation: Bool = false
-    /// Hands-free also starts with a double clap (only while Jarvis is idle).
+    /// Hands-free also starts with a double clap (only while Orbit is idle).
     var wakeOnClap: Bool = true
     /// Folder where requests about no project start (mail, calendar, questions). Empty = `<projectsRoot>/general`.
     var generalWorkspace: String = ""
     /// Claude model for coding tasks (building or changing software). Other tasks use the CLI default.
     var codingModel: String = "claude-opus-5-5"
+    /// Interpreter and summaries are independent of the agent selected for each project.
+    var orchestratorAgent: AgentKind = .codex
+    /// Empty uses the CLI default; routing runs with low reasoning in an isolated workspace.
+    var codexOrchestratorModel: String = ""
+    /// Empty honours the user's Codex configuration for work sessions.
+    var codexModel: String = ""
+    var codexAssistantSelection = CodexModelSelection()
+    var codexWorkerSelection = CodexModelSelection()
+    var workflowLibrary = WorkflowLibrary()
+    var workflowDefinition: WorkflowDefinition {
+        get { workflowLibrary.defaultDefinition }
+        set { workflowLibrary.defaultDefinition = newValue }
+    }
+    var codexInteractiveControls: Bool = true
+    var claudeInteractiveControls: Bool = true
     /// When a session built something to look at (an HTML page, a site on localhost), open it at the end.
     var openResults: Bool = true
     var muteDuringFocus: Bool = true
     var blipOnChordDown: Bool = true
-    var defaultAgent: AgentKind = .claude
-    /// Headless sessions cannot answer permission prompts, so "bypass" is the only mode where shell commands actually run.
+    var defaultAgent: AgentKind = .codex
+    /// Codex runs unattended with workspace restrictions by default; broader access is opt-in.
     var claudePermissionMode: PermissionMode = .bypassPermissions
-    var codexPermissionMode: PermissionMode = .bypassPermissions
+    var codexPermissionMode: PermissionMode = .acceptEdits
     var maxConcurrentSessions: Int = 6
     /// "italiano": generic Italian male voice (not a celebrity clone), picked on 29/09/2026 from six Fish Pro samples.
     var fishVoiceID: String = "f888c2e0c08a4f16b00007c412797fbc"
@@ -167,6 +234,14 @@ struct Settings: Codable, Sendable {
     var claudePathOverride: String? = nil
     var codexPathOverride: String? = nil
 
+    func interactiveControls(for agent: AgentKind) -> Bool {
+        switch agent {
+        case .codex: codexInteractiveControls
+        case .claude: claudeInteractiveControls
+        case .retiredDeepSeek: false
+        }
+    }
+
     /// Missing keys fall back to the defaults above, so a settings.json written by an older build still loads.
     init() {}
     init(from decoder: Decoder) throws {
@@ -176,6 +251,18 @@ struct Settings: Codable, Sendable {
         overlayToggle = try c.decodeIfPresent(Hotkey.self, forKey: .overlayToggle) ?? d.overlayToggle
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
         overlayOpacity = try c.decodeIfPresent(Double.self, forKey: .overlayOpacity) ?? d.overlayOpacity
+        showIdlePill = try c.decodeIfPresent(Bool.self, forKey: .showIdlePill) ?? d.showIdlePill
+        mascotEnabled = try c.decodeIfPresent(Bool.self, forKey: .mascotEnabled) ?? d.mascotEnabled
+        mascotSize = min(320, max(120, try c.decodeIfPresent(Double.self, forKey: .mascotSize) ?? d.mascotSize))
+        mascotOrigin = try c.decodeIfPresent(CGPoint.self, forKey: .mascotOrigin)
+        mascotAnimations = try c.decodeIfPresent(Bool.self, forKey: .mascotAnimations) ?? d.mascotAnimations
+        mascotShowStatus = try c.decodeIfPresent(Bool.self, forKey: .mascotShowStatus) ?? d.mascotShowStatus
+        mascotClipAssignments = try c.decodeIfPresent([String: String].self, forKey: .mascotClipAssignments) ?? d.mascotClipAssignments
+        // The new Meshy download replaces the step/sit clip and removes boxing.
+        // Keep equivalent choices; removed clips fall back to the state's default.
+        mascotClipAssignments = mascotClipAssignments.mapValues {
+            $0 == "Step_to_Sit_Transition" ? OrbitMeshyClip.sitTransition.rawValue : $0
+        }.filter { $0.value == "standing" || OrbitMeshyClip(rawValue: $0.value) != nil }
         speakSummaries = try c.decodeIfPresent(Bool.self, forKey: .speakSummaries) ?? d.speakSummaries
         speakProgress = try c.decodeIfPresent(Bool.self, forKey: .speakProgress) ?? d.speakProgress
         handsFree = try c.decodeIfPresent(Bool.self, forKey: .handsFree) ?? d.handsFree
@@ -183,10 +270,22 @@ struct Settings: Codable, Sendable {
         wakeOnClap = try c.decodeIfPresent(Bool.self, forKey: .wakeOnClap) ?? d.wakeOnClap
         generalWorkspace = try c.decodeIfPresent(String.self, forKey: .generalWorkspace) ?? d.generalWorkspace
         codingModel = try c.decodeIfPresent(String.self, forKey: .codingModel) ?? d.codingModel
+        orchestratorAgent = try c.decodeIfPresent(AgentKind.self, forKey: .orchestratorAgent) ?? d.orchestratorAgent
+        if !AgentKind.interpreterCases.contains(orchestratorAgent) { orchestratorAgent = d.orchestratorAgent }
+        codexOrchestratorModel = try c.decodeIfPresent(String.self, forKey: .codexOrchestratorModel) ?? d.codexOrchestratorModel
+        codexModel = try c.decodeIfPresent(String.self, forKey: .codexModel) ?? d.codexModel
+        codexAssistantSelection = try c.decodeIfPresent(CodexModelSelection.self, forKey: .codexAssistantSelection) ?? d.codexAssistantSelection
+        codexWorkerSelection = try c.decodeIfPresent(CodexModelSelection.self, forKey: .codexWorkerSelection) ?? d.codexWorkerSelection
+        let legacy = try decoder.container(keyedBy: LegacyWorkflowKeys.self)
+        workflowLibrary = try c.decodeIfPresent(WorkflowLibrary.self, forKey: .workflowLibrary)
+            ?? WorkflowLibrary(definition: legacy.decodeIfPresent(WorkflowDefinition.self, forKey: .workflowDefinition) ?? .standard)
+        codexInteractiveControls = try c.decodeIfPresent(Bool.self, forKey: .codexInteractiveControls) ?? d.codexInteractiveControls
+        claudeInteractiveControls = try c.decodeIfPresent(Bool.self, forKey: .claudeInteractiveControls) ?? d.claudeInteractiveControls
         openResults = try c.decodeIfPresent(Bool.self, forKey: .openResults) ?? d.openResults
         muteDuringFocus = try c.decodeIfPresent(Bool.self, forKey: .muteDuringFocus) ?? d.muteDuringFocus
         blipOnChordDown = try c.decodeIfPresent(Bool.self, forKey: .blipOnChordDown) ?? d.blipOnChordDown
         defaultAgent = try c.decodeIfPresent(AgentKind.self, forKey: .defaultAgent) ?? d.defaultAgent
+        if !defaultAgent.isAvailable { defaultAgent = d.defaultAgent }
         claudePermissionMode = try c.decodeIfPresent(PermissionMode.self, forKey: .claudePermissionMode) ?? d.claudePermissionMode
         codexPermissionMode = try c.decodeIfPresent(PermissionMode.self, forKey: .codexPermissionMode) ?? d.codexPermissionMode
         maxConcurrentSessions = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentSessions) ?? d.maxConcurrentSessions
@@ -203,6 +302,14 @@ struct Settings: Codable, Sendable {
         claudePathOverride = try c.decodeIfPresent(String.self, forKey: .claudePathOverride)
         codexPathOverride = try c.decodeIfPresent(String.self, forKey: .codexPathOverride)
     }
+
+    var assistantBackend: CodexBackend { codexAssistantSelection.backend(cloudModel: codexOrchestratorModel) }
+    var workerBackend: CodexBackend { codexWorkerSelection.backend(cloudModel: codexModel) }
+
+    func permissionMode(for agent: AgentKind) -> PermissionMode {
+        switch agent { case .claude: claudePermissionMode; case .codex: codexPermissionMode; case .retiredDeepSeek: .acceptEdits }
+    }
+    var defaultPermissionMode: PermissionMode { permissionMode(for: defaultAgent) }
 
     var isItalian: Bool { speechLocale.hasPrefix("it") }
     /// Language name handed to the orchestrator for everything it says out loud.

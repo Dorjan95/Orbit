@@ -34,7 +34,7 @@ final class ProjectRegistry {
     /// Summary block for the orchestrator prompt (§4.1).
     var promptSummary: String {
         projects.isEmpty ? "- (none registered yet)" :
-        projects.map { "- \($0.name) · \($0.path) · [\($0.aliases.joined(separator: ", "))] · \($0.defaultAgent.rawValue)" }.joined(separator: "\n")
+        projects.map { "- \($0.name) · \($0.path) · [\($0.aliases.joined(separator: ", "))] · \($0.defaultAgent.rawValue) · workflow verification: \($0.verificationCommand?.isEmpty == false ? "configured" : "missing")" }.joined(separator: "\n")
     }
 
     static func suggestedName(for url: URL) -> String {
@@ -46,44 +46,136 @@ final class ProjectRegistry {
 final class SessionStore {
     private(set) var sessions: [Session] = []
     private var counter: Int
+    private let snapshotURL: URL
+    private let journal: SessionJournal
+    private(set) var persistenceError: String?
 
-    init() {
-        let loaded = JSONStore.load([Session].self, from: AppPaths.sessions) ?? []
-        // Anything marked running at launch was orphaned by a previous crash — kill + mark failed (§10.7).
-        sessions = loaded.map { s in
-            var s = s
-            if s.status == .running {
-                if let pid = s.pid, Subprocess.isAlive(pid) { Subprocess.killGroup(pid) }
-                s.status = .failed; s.finishedAt = s.finishedAt ?? Date(); s.activity = "Interrotta dal riavvio dell'app"
-            }
-            return s
-        }
+    init(root: URL = AppPaths.root) {
+        snapshotURL = root.appendingPathComponent("sessions.json")
+        journal = SessionJournal(url: root.appendingPathComponent("session-events.jsonl"))
+        let snapshot = JSONStore.load([Session].self, from: snapshotURL)
+        let loaded = snapshot ?? []
         counter = loaded.compactMap { Int($0.id.dropFirst(2)) }.max() ?? 0
-        if loaded.contains(where: { $0.status == .running }) { JSONStore.save(sessions, to: AppPaths.sessions) }
+        sessions = loaded
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let events = try journal.replay()
+            if events.isEmpty {
+                if snapshot == nil && FileManager.default.fileExists(atPath: snapshotURL.path) {
+                    throw SessionJournalError.unavailable("sessions.json non valido; nessuna sessione è stata sovrascritta.")
+                }
+                try journal.bootstrap(loaded)
+            } else {
+                var latest: [String: Session] = [:]
+                for event in events { latest[event.session.id] = event.session }
+                sessions = latest.values.sorted { $0.startedAt > $1.startedAt }
+                counter = latest.keys.compactMap { Int($0.dropFirst(2)) }.max() ?? counter
+            }
+        } catch {
+            persistenceError = error.localizedDescription
+            AppLog.write("session journal: \(error)")
+        }
+        // Removed providers remain historical identities, never remote Codex/Claude contexts.
+        for original in sessions where original.usesRetiredAgent &&
+            (original.hasPendingWork || original.pid != nil || !original.pendingApprovals.isEmpty ||
+             (original.turns ?? []).contains(where: { $0.state == .dispatched })) {
+            var archived = original
+            if original.status.isOngoing || original.currentTurnID != nil { archived.status = .failed }
+            archived.currentTurnID = nil; archived.pid = nil; archived.steering = nil; archived.finishedAt = Date()
+            archived.activity = "Agente esterno rimosso: sessione conservata nello storico."
+            archived.workflow?.state = .cancelled
+            archived.workflow?.detail += "\nAgente esterno rimosso: nessuna fase verrà rilanciata."
+            archived.approvals = archived.approvals?.map {
+                var approval = $0
+                if approval.state == .pending { approval.state = .expired; approval.decidedAt = Date() }
+                return approval
+            }
+            archived.turns = archived.turns?.map {
+                var turn = $0
+                if turn.state == .queued || turn.state == .dispatched {
+                    turn.state = turn.state == .queued ? .cancelled : .interrupted; turn.finishedAt = Date()
+                }
+                return turn
+            }
+            do { try save(archived, kind: .recovered) }
+            catch { if let index = sessions.firstIndex(where: { $0.id == archived.id }) { sessions[index] = archived } }
+        }
+        // PIDs saved across a restart are not reliable process identities. Do not
+        // signal them or repeat uncertain work; retain only requests still queued.
+        for original in sessions where original.status == .running || original.currentTurnID != nil || (original.status == .needsInput && original.pid != nil) || (original.turns ?? []).contains(where: { $0.state == .dispatched }) || !original.pendingApprovals.isEmpty {
+            var recovered = original
+            recovered.status = .failed; recovered.finishedAt = Date(); recovered.pid = nil
+            recovered.activity = "Interrotta dal riavvio: verifica il lavoro prima di continuare"
+            recovered.currentTurnID = nil
+            recovered.workflow?.state = .interrupted
+            recovered.workflow?.detail = "Workflow interrotto dal riavvio: nessuna fase viene rilanciata automaticamente."
+            recovered.approvals = recovered.approvals?.map {
+                var approval = $0
+                if approval.state == .pending { approval.state = .expired; approval.decidedAt = Date() }
+                return approval
+            }
+            if var turns = recovered.turns {
+                for index in turns.indices where turns[index].state == .dispatched {
+                    turns[index].state = .interrupted; turns[index].finishedAt = Date()
+                }
+                recovered.turns = turns
+            }
+            do { try save(recovered, kind: .recovered) }
+            catch {
+                if let index = sessions.firstIndex(where: { $0.id == recovered.id }) { sessions[index] = recovered }
+            }
+        }
+        if persistenceError == nil { trimAndSave() }
     }
 
     var running: [Session] { sessions.filter { $0.status == .running } }
+    var activeVisible: [Session] { visible.filter(\.hasPendingWork) }
+    var finishedVisible: [Session] { visible.filter { !$0.hasPendingWork } }
     var visible: [Session] {
         sessions.filter { !$0.dismissed }.sorted {
-            if $0.status.isActive != $1.status.isActive { return $0.status.isActive }
+            if $0.hasPendingWork != $1.hasPendingWork { return $0.hasPendingWork }
             return $0.startedAt > $1.startedAt
         }
     }
 
     func nextID() -> String { counter += 1; return String(format: "s_%02d", counter) }
 
-    func insert(_ s: Session) { sessions.insert(s, at: 0); trimAndSave() }
-    func update(_ id: String, _ mutate: (inout Session) -> Void) {
-        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
-        mutate(&sessions[i]); trimAndSave()
+    /// A successful return means the lifecycle record is flushed to disk.
+    func save(_ session: Session, kind: SessionEventKind, turnID: UUID? = nil) throws {
+        guard persistenceError == nil else { throw SessionJournalError.unavailable(persistenceError!) }
+        do { try journal.append(session, kind: kind, turnID: turnID) }
+        catch {
+            persistenceError = error.localizedDescription
+            throw error
+        }
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = session }
+        else { sessions.insert(session, at: 0) }
+        trimAndSave()
+    }
+
+    func insert(_ s: Session) {
+        do { try save(s, kind: .accepted) } catch { AppLog.write("session insert: \(error)") }
+    }
+    func update(_ id: String, event: SessionEventKind? = nil, _ mutate: (inout Session) -> Void) {
+        guard var session = session(id) else { return }
+        mutate(&session)
+        if let event {
+            do { try save(session, kind: event, turnID: session.currentTurnID) }
+            catch { AppLog.write("session update: \(error)") }
+        } else if let index = sessions.firstIndex(where: { $0.id == id }) {
+            sessions[index] = session; trimAndSave()
+        }
     }
     func session(_ id: String) -> Session? { sessions.first { $0.id == id } }
-    func dismiss(_ id: String) { update(id) { $0.dismissed = true } }
-    func clearFinished() { for s in sessions where !s.status.isActive { dismiss(s.id) } }
+    func dismiss(_ id: String) { update(id, event: .updated) { $0.dismissed = true } }
+    func clearFinished() { for s in sessions where !s.hasPendingWork { dismiss(s.id) } }
 
     private func trimAndSave() {
-        if sessions.count > 100 { sessions = Array(sessions.prefix(100)) }
-        JSONStore.save(sessions, to: AppPaths.sessions)
+        // Never evict active sessions or accepted work because history is full.
+        let protected = sessions.filter(\.hasPendingWork)
+        let history = sessions.filter { !$0.hasPendingWork }
+        sessions = protected + history.prefix(max(0, 100 - protected.count))
+        if persistenceError == nil { JSONStore.save(sessions, to: snapshotURL) }
     }
 
     /// Summary block for the orchestrator prompt (§4.1).
@@ -93,6 +185,10 @@ final class SessionStore {
         return recent.isEmpty ? "- (none)" :
         recent.map { s in
             var line = "- \(s.id) · \(s.projectName) · \(s.agent.rawValue) · \(s.status.rawValue) · \"\(s.task.prefix(60))\" · \(Self.format(s.elapsed))"
+            if s.offersSteering { line += " · steering available (interactive implementation)" }
+            if s.usesRetiredAgent { line += " · historical only: removed provider, no follow-up or resume" }
+            if let workflow = s.workflow { line += " · workflow: \(workflow.state.rawValue) · \(workflow.detail.prefix(200))" }
+            if !s.queuedTurns.isEmpty { line += " · queued: \(s.queuedTurns.count)" }
             if s.status == .running, !s.activity.isEmpty { line += " · now: \(s.activity.prefix(60))" }
             if let end = s.finishedAt {
                 line += " · finished \(Int(Date().timeIntervalSince(end) / 60)) min ago"

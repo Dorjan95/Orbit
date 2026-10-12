@@ -1,31 +1,33 @@
 import SwiftUI
 
-/// §5 — glass material: real Liquid Glass on macOS 26, `.ultraThinMaterial` before.
-/// One shadow (hairline first), 20-pt continuous radius, no borders.
-struct GlassBackground: ViewModifier {
+/// Palette and surfaces adapted from EnvHalo's native macOS interface.
+enum OrbitDesign {
+    static let carbon = Color(red: 11 / 255, green: 13 / 255, blue: 15 / 255)
+    static let screen = Color(red: 8 / 255, green: 10 / 255, blue: 12 / 255)
+    static let surface = Color(red: 17 / 255, green: 20 / 255, blue: 23 / 255)
+    static let raisedSurface = Color(red: 23 / 255, green: 27 / 255, blue: 31 / 255)
+    static let chalk = Color(red: 243 / 255, green: 241 / 255, blue: 234 / 255)
+    static let lime = Color(red: 201 / 255, green: 255 / 255, blue: 74 / 255)
+    static let secondaryText = chalk.opacity(0.72)
+    static let tertiaryText = chalk.opacity(0.55)
+    static let line = chalk.opacity(0.13)
+    static let warning = Color(red: 1, green: 0.72, blue: 0.28)
+    static let error = Color(red: 1, green: 0.34, blue: 0.4)
+}
+
+struct HaloSurface: ViewModifier {
     var radius: CGFloat = 20
-    var interactive = false
     func body(content: Content) -> some View {
-        if #available(macOS 26, *) {
-            content
-                .glassEffect(interactive ? .regular.interactive() : .regular, in: .rect(cornerRadius: radius, style: .continuous))
-                .shadow(color: .black.opacity(0.05), radius: 0, y: 0.5)
-                .shadow(color: .black.opacity(0.18), radius: 24, y: 10)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .strokeBorder(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.05), radius: 0, y: 0.5)
-                .shadow(color: .black.opacity(0.18), radius: 24, y: 10)
-        }
+        content
+            .background(Color.black, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .foregroundStyle(OrbitDesign.chalk)
+            .tint(OrbitDesign.lime)
+            .preferredColorScheme(.dark)
     }
 }
 
 extension View {
-    func glass(radius: CGFloat = 20, interactive: Bool = false) -> some View { modifier(GlassBackground(radius: radius, interactive: interactive)) }
+    func haloSurface(radius: CGFloat = 20) -> some View { modifier(HaloSurface(radius: radius)) }
 }
 
 enum Motion {
@@ -50,11 +52,11 @@ struct PressableStyle: ButtonStyle {
 extension SessionStatus {
     var tint: Color {
         switch self {
-        case .running: .accentColor
-        case .done: .green
-        case .needsInput: .orange
-        case .failed: .red
-        case .cancelled: .secondary
+        case .running: OrbitDesign.lime
+        case .done: OrbitDesign.lime
+        case .needsInput: OrbitDesign.warning
+        case .failed: OrbitDesign.error
+        case .cancelled: OrbitDesign.secondaryText
         }
     }
 }
@@ -96,7 +98,7 @@ struct StatusBadge: View {
 
 struct Chip: View {
     let text: String
-    var tint: Color = .secondary
+    var tint: Color = OrbitDesign.secondaryText
     var body: some View {
         Text(text).font(.system(size: 11, weight: .medium))
             .padding(.horizontal, 7).padding(.vertical, 2)

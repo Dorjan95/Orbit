@@ -23,8 +23,19 @@ enum CLILocator {
             let p = "\(dir)/\(name)"
             if FileManager.default.isExecutableFile(atPath: p) { return p }
         }
+        // Finder launches have a minimal PATH; the desktop app may be the only CLI installation.
+        if name == "codex" {
+            for path in bundledCodexPaths where FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
         return nil
     }
+
+    static let bundledCodexPaths = [
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        "/Applications/Codex.app/Contents/Resources/codex",
+        NSHomeDirectory() + "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        NSHomeDirectory() + "/Applications/Codex.app/Contents/Resources/codex",
+    ]
 
     /// Environment for child CLIs: inherit, widen PATH, and make sure no API keys leak in (§9 #9).
     static var childEnvironment: [String: String] {
@@ -33,6 +44,7 @@ enum CLILocator {
         env["HOME"] = NSHomeDirectory()
         env.removeValue(forKey: "ANTHROPIC_API_KEY")
         env.removeValue(forKey: "OPENAI_API_KEY")
+        env.removeValue(forKey: "CODEX_API_KEY")
         env["TERM"] = "dumb"
         env["NO_COLOR"] = "1"
         return env

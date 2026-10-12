@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Vector marks for the two agents, drawn in code so no asset catalogue is needed.
+/// Agent marks drawn in code so no asset catalogue is needed.
 struct AgentIcon: View {
     let agent: AgentKind
     var size: CGFloat = 14
@@ -9,6 +9,7 @@ struct AgentIcon: View {
             switch agent {
             case .claude: ClaudeMark().fill(Color(red: 0.85, green: 0.47, blue: 0.34))   // Anthropic coral
             case .codex:  CodexMark().fill(.primary)
+            case .retiredDeepSeek: Image(systemName: "archivebox").resizable().scaledToFit().foregroundStyle(.secondary)
             }
         }
         .frame(width: size, height: size)

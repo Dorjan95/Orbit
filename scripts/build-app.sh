@@ -1,13 +1,23 @@
 #!/bin/zsh
-# Builds Jarvis.app from the SwiftPM product (no Xcode project needed).
+# Builds Orbit.app from the SwiftPM product (no Xcode project needed).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CONF=${1:-release}
-swift build -c "$CONF" 2>&1 | grep -Ev "^\s*$" | tail -5
+mkdir -p build
+BUILD_LOG="build/compile.log"
+if ! swift build -c "$CONF" > "$BUILD_LOG" 2>&1; then
+  cat "$BUILD_LOG"
+  exit 1
+fi
+tail -5 "$BUILD_LOG"
 BIN=$(swift build -c "$CONF" --show-bin-path)
-APP="build/Jarvis.app"
+APP="build/Orbit.app"
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/Jarvis" "$APP/Contents/MacOS/Jarvis"
+cp "$BIN/Orbit" "$APP/Contents/MacOS/Orbit"
+# SwiftPM resolves Bundle.module beside the executable or in the app resources.
+for RESOURCE_BUNDLE in "$BIN"/*.bundle; do
+  [ -d "$RESOURCE_BUNDLE" ] && ditto "$RESOURCE_BUNDLE" "$APP/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+done
 cp Sources/Jarvis/Info.plist "$APP/Contents/Info.plist"
 echo "APPL????" > "$APP/Contents/PkgInfo"
 # Sign with the self-signed "Jarvis Build Signing" so TCC grants (mic/speech) survive rebuilds: ad-hoc signatures

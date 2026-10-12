@@ -79,6 +79,7 @@ final class SpeechService {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         req.taskHint = .dictation
+        req.contextualStrings = ["Hey Orbit", "Ehi Orbit", "Orbit"]
         request = req
         return req
     }

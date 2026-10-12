@@ -2,21 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>ai.martes.jarvis</string>
-  <key>CFBundleName</key><string>Jarvis</string>
-  <key>CFBundleDisplayName</key><string>Jarvis</string>
-  <key>CFBundleExecutable</key><string>Jarvis</string>
+  <key>CFBundleName</key><string>Orbit</string>
+  <key>CFBundleDisplayName</key><string>Orbit</string>
+  <key>CFBundleExecutable</key><string>Orbit</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.5.0</string>
+  <key>CFBundleVersion</key><string>15000</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleDevelopmentRegion</key><string>it</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Jarvis ascolta mentre tieni premuta la scorciatoia per parlare.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>Jarvis trascrive la tua richiesta direttamente sul Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Orbit ascolta le tue richieste e, se attivato, riconosce il nome Orbit o un doppio battito di mani.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Orbit trascrive la tua richiesta direttamente sul Mac.</string>
   <key>CFBundleURLTypes</key><array><dict>
     <key>CFBundleURLName</key><string>ai.martes.jarvis</string>
-    <key>CFBundleURLSchemes</key><array><string>jarvis</string></array>
+    <key>CFBundleURLSchemes</key><array><string>orbit</string><string>jarvis</string></array>
   </dict></array>
-  <key>NSAppleEventsUsageDescription</key><string>Jarvis apre i progetti nel Terminale.</string>
+  <key>NSAppleEventsUsageDescription</key><string>Orbit apre i progetti nel Terminale.</string>
 </dict></plist>

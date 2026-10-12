@@ -1,8 +1,12 @@
 import Foundation
 
-/// §3.3 / §4 — Haiku via `claude -p`, billed to the Claude subscription. Never touches the API directly.
+/// Routes requests and summarizes results through the selected, authenticated CLI.
 struct Orchestrator: Sendable {
-    let claudePath: String
+    let agent: AgentKind
+    let executable: String
+    var defaultAgent: AgentKind = .codex
+    var codexModel: String = ""
+    var codexBackend: CodexBackend? = nil
     /// Language of everything spoken back ("Italian" by default, from the dictation locale).
     var language: String = "Italian"
 
@@ -30,8 +34,8 @@ struct Orchestrator: Sendable {
     }
 
     static let systemPrompt = """
-    You are Jarvis, a friendly voice assistant and work partner for one developer (use their name if memory has it).
-    The user may address you by name ("Jarvis", or dictation variants like "Giarvis", "Gervis", "Jervis") at the start of a
+    You are Orbit, a friendly voice assistant and work partner for one developer (use their name if memory has it).
+    The user may address you with "Hey Orbit" (Italian dictation may write "Ehi Orbit", "Hey Òrbit", "Hey Órbit") at the start of a
     request: that is you, never a project name or part of the task.
     You receive a spoken transcript and must return ONE JSON object and nothing else. Never run tools.
     "speak" is what you say out loud: warm, upbeat, natural — a good colleague who likes the person, not a robot or a
@@ -41,7 +45,13 @@ struct Orchestrator: Sendable {
 
     Actions:
     - spawn: start a new agent session. Requires task; project may be null for general (non-project) work.
-    - followup: send more instructions to an existing session (session_id required).
+    - followup: queue more instructions to an existing session (session_id required).
+    - steer: ONLY when the user explicitly asks to interrupt and redirect current work (session_id required).
+      Available during implementation in sessions marked "steering available" (Codex or Claude Code).
+      Ordinary additional instructions are followup.
+    - workflow: ONLY when explicitly requested, start implementation → independent review → configured project verification.
+      project must be registered and have a saved verification command. Put the implementation request in task.
+      The user configures the command in Settings → Sessions → New workflow; never invent a check command.
     - cancel: stop a session (session_id required; if the user names a project, pick its running session).
     - status: summarise all sessions in one breath in "speak".
 
@@ -70,12 +80,12 @@ struct Orchestrator: Sendable {
       unknown: if the user describes building something that matches no registered project ("make a bakery site with a big
       hero", "I need a landing page for a dentist"), use create with a derived name and the work in "task" — it starts immediately.
       Only clarify when the request could plausibly mean two REGISTERED projects.
-    - chitchat: ONLY greetings, thanks, questions about Jarvis itself, or pure memory requests (remember/forget).
+    - chitchat: ONLY greetings, thanks, questions about Orbit itself, or pure memory requests (remember/forget).
       You have NO tools and cannot look anything up. NEVER say "I can't access/check X". Any request for information or
       action in the real world — calendar, email, messages, weather, files, the web, ClickUp, Slack, git, "check…",
-      "look up…", "find…", "send…", "what's on…" — is a task for Claude Code, which has those integrations:
-      use spawn with the full request in "task". If it concerns no registered project, set project = null and
-      Claude Code runs in the general workspace. Default agent for such tasks is claude.
+      "look up…", "find…", "send…", "what's on…" — is a task for the configured coding agent, using its connected integrations:
+      use spawn with the full request in "task". If it concerns no registered project, set project = null.
+      The configured default agent runs in the general workspace; do not assume integrations exist.
     - create: the user wants a NEW project ("create/make/start a new project called X", "new site for a plumber").
       Put a short, human name (2–4 words) in "project". NEVER "New", "New Project" or any placeholder: if no name was given,
       derive one from what they want built (in this or recent turns — "a wild HTML page for a construction firm" → "Construction Showcase");
@@ -119,7 +129,8 @@ struct Orchestrator: Sendable {
     Don't put a cue on a bare question or a plain "On it."
 
     Rules:
-    - Pick agent "codex" only if the user names Codex; otherwise use the project's default agent. Speech often mangles
+    - Use the registered project's default agent, or the configured default agent for general requests and new projects.
+      An explicitly named agent overrides that default. Speech often mangles
       the name — "Kodex", "codecs", "co-dex", "code X", "cortex", "Codex's", "open AI" all mean Codex.
       Likewise "Claud", "Cloud", "Claude code", "Anthropic" mean Claude.
     - "project" must be exactly one of the registry names, or null (null + spawn = general workspace; never clarify just to pick a project for a general request).
@@ -174,18 +185,75 @@ struct Orchestrator: Sendable {
                 memories: String = "- (nothing saved yet)", history: String = "- (none)") async -> OrchestratorAction {
         let prompt = Self.userPrompt(projects: projects, sessions: sessions, maxSessions: maxSessions, runningCount: runningCount,
                                      transcript: transcript, context: context, memories: memories, history: history)
-        let args = Self.baseArgs() + ["--system-prompt", Self.systemPrompt + Self.languageRule(language), "--json-schema", OrchestratorAction.jsonSchema, prompt]
+        let system = Self.systemPrompt + Self.languageRule(language)
+            + "\nConfigured default agent for general requests and new projects: " + defaultAgent.rawValue
+            + ". Use this agent unless the user explicitly selects another or a registered project has a different default."
         for attempt in 0..<2 {
             let t0 = Date()
-            let r = await CLILocator.run(claudePath, args, timeout: 30, extraEnv: Self.env)
+            let r = await runJSON(system: system, schema: OrchestratorAction.jsonSchema, prompt: prompt)
             AppLog.write("orchestrator attempt \(attempt): exit=\(r.code) \(String(format: "%.2f", Date().timeIntervalSince(t0)))s stdout=\(r.stdout.count)B stderr=\(r.stderr.prefix(200))")
-            if let action = Self.parse(resultJSON: r.stdout) { return action }
+            if r.code == 0, let action = Self.parse(resultJSON: r.stdout) { return action }
             if attempt == 0 { continue }
             let err = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if agent == .codex, let backend = codexBackend, backend.provider.isLocal {
+                return OrchestratorAction(action: .chitchat, agent: nil, project: nil, sessionID: nil, task: nil,
+                    speak: backend.configurationError ?? "Non riesco a usare il modello locale. Verifica il server di \(backend.provider.serverName) e il modello in Impostazioni → Modelli.")
+            }
             return OrchestratorAction(action: .chitchat, agent: nil, project: nil, sessionID: nil, task: nil,
-                                      speak: err.contains("login") || err.contains("auth") ? "Claude Code non ha fatto il login." : "Scusa, non sono riuscito a capirla.")
+                                      speak: err.localizedCaseInsensitiveContains("login") || err.localizedCaseInsensitiveContains("auth")
+                                        ? "\(agent.displayName) richiede il login."
+                                        : "\(agent.displayName) non ha risposto correttamente. Guarda il log e riprova.")
         }
         return OrchestratorAction(action: .chitchat, agent: nil, project: nil, sessionID: nil, task: nil, speak: "Scusa, non sono riuscito a capirla.")
+    }
+
+    /// Interpreter calls do not inherit project instructions, MCP servers or plugins.
+    /// Actual work sessions still use the user's normal Codex configuration.
+    func runJSON(system: String, schema: String, prompt: String) async -> (code: Int32, stdout: String, stderr: String) {
+        guard AgentKind.interpreterCases.contains(agent) else { return (-1, "", "Questo agente è disponibile solo per i lavori nei progetti.") }
+        if agent == .claude {
+            return await CLILocator.run(executable, Self.baseArgs() + ["--system-prompt", system, "--json-schema", schema, prompt],
+                                        timeout: 30, extraEnv: Self.env)
+        }
+        let backend = codexBackend ?? CodexBackend(model: codexModel)
+        if let error = backend.configurationError { return (-1, "", error) }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jarvis-router-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let schemaURL = dir.appendingPathComponent("schema.json")
+            let instructionsURL = dir.appendingPathComponent("instructions.txt")
+            let outputURL = dir.appendingPathComponent("response.json")
+            try Data(schema.utf8).write(to: schemaURL)
+            try Data(system.utf8).write(to: instructionsURL)
+            let args = Self.codexArgs(schemaPath: schemaURL.path, outputPath: outputURL.path,
+                                      instructionsPath: instructionsURL.path, model: codexModel, prompt: prompt, backend: backend)
+            let result = await CLILocator.run(executable, args, cwd: dir.path, timeout: backend.provider.isLocal ? 120 : 45)
+            let output = (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
+            return (result.code, output, result.stderr)
+        } catch {
+            return (-1, "", "Could not prepare interpreter: \(error.localizedDescription)")
+        }
+    }
+
+    static func codexArgs(schemaPath: String, outputPath: String, instructionsPath: String, model: String, prompt: String, backend: CodexBackend? = nil) -> [String] {
+        // JSON string quoting is also valid for these TOML path strings (quotes/backslashes included).
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let quotedPath = String(data: try! encoder.encode(instructionsPath), encoding: .utf8)!
+        var args = ["exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check",
+                    "--sandbox", "read-only", "-c", "approval_policy=\"never\"",
+                    "-c", "features.shell_tool=false", "-c", "features.apps=false", "-c", "features.plugins=false",
+                    "-c", "web_search=\"disabled\"", "-c", "project_doc_max_bytes=0",
+                    "-c", "model_reasoning_effort=\"low\"", "-c", "model_instructions_file=" + quotedPath,
+                    "--output-schema", schemaPath, "--output-last-message", outputPath]
+        let selected = backend ?? CodexBackend(model: model)
+        if selected.provider.isLocal {
+            // General local models need not implement OpenAI reasoning levels.
+            if let index = args.firstIndex(of: "model_reasoning_effort=\"low\"") { args.removeSubrange((index - 1)...index) }
+        }
+        args += selected.arguments
+        return args + [prompt]
     }
 
     /// Accepts the `claude -p --output-format json` envelope: prefers `structured_output`, falls back to `result` text.
@@ -193,10 +261,11 @@ struct Orchestrator: Sendable {
         guard let data = resultJSON.data(using: .utf8),
               let env = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let dec = JSONDecoder()
+        if let action = try? dec.decode(OrchestratorAction.self, from: data), action.agent?.isAvailable != false { return action }
         if let so = env["structured_output"], let d = try? JSONSerialization.data(withJSONObject: so),
-           let a = try? dec.decode(OrchestratorAction.self, from: d) { return a }
+           let a = try? dec.decode(OrchestratorAction.self, from: d), a.agent?.isAvailable != false { return a }
         if let text = env["result"] as? String, let d = extractJSON(text)?.data(using: .utf8),
-           let a = try? dec.decode(OrchestratorAction.self, from: d) { return a }
+           let a = try? dec.decode(OrchestratorAction.self, from: d), a.agent?.isAvailable != false { return a }
         return nil
     }
 
@@ -217,9 +286,10 @@ struct Orchestrator: Sendable {
         """
         let sys = "Return ONE JSON object {\"speak\": \"...\"}: a ≤25-word spoken summary for the developer, read aloud by an expressive TTS. Sound like a warm, upbeat colleague sharing news with a friend — contractions, a little personality, maybe an offer of a next step. Start with exactly one emotion cue — [excited] [confident] [satisfied] for success, [sighing] or [empathetic] for failures, [curious] if it needs input — and you may add ONE sound cue mid-sentence where it is natural: [laughing] or [chuckling] after a light remark, [break] before a closing question. Cues are Fish Audio tags, always in English, performed not read — e.g. \"[excited] Plumber site's done, blue theme's live on port three thousand. [chuckling] Even the footer behaved.\" Say plainly if it failed or needs input. On success never mention exit codes or that there were no errors. If something was already opened on screen, say it is open in front of them and never offer to open or check it in the browser; offer a next change instead. Spell numbers/URLs the way you'd say them. No markdown. Write it in \(language)."
         let schema = #"{"type":"object","additionalProperties":false,"properties":{"speak":{"type":"string"}},"required":["speak"]}"#
-        let r = await CLILocator.run(claudePath, Self.baseArgs() + ["--system-prompt", sys, "--json-schema", schema, prompt], timeout: 30, extraEnv: Self.env)
-        if let data = r.stdout.data(using: .utf8),
+        let r = await runJSON(system: sys, schema: schema, prompt: prompt)
+        if r.code == 0, let data = r.stdout.data(using: .utf8),
            let env = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let s = env["speak"] as? String { return s }
             if let so = env["structured_output"] as? [String: Any], let s = so["speak"] as? String { return s }
             if let t = env["result"] as? String, let j = Self.extractJSON(t)?.data(using: .utf8),
                let o = try? JSONSerialization.jsonObject(with: j) as? [String: Any], let s = o["speak"] as? String { return s }

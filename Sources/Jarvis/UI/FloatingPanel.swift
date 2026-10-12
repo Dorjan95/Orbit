@@ -3,10 +3,10 @@ import SwiftUI
 
 /// Non-activating, always-on-top, all-Spaces, transparent NSPanel hosting SwiftUI (§5.1, §5.2).
 final class FloatingPanel<Content: View>: NSPanel {
-    private let host: NSHostingView<Content>
+    private let host: EdgeToEdgeHostingView<Content>
 
     init(content: Content, draggable: Bool) {
-        host = NSHostingView(rootView: content)
+        host = EdgeToEdgeHostingView(rootView: content)
         super.init(contentRect: NSRect(x: 0, y: 0, width: 320, height: 56),
                    styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
                    backing: .buffered, defer: false)
@@ -30,6 +30,7 @@ final class FloatingPanel<Content: View>: NSPanel {
 
     override var canBecomeKey: Bool { true }   // needed for the Reply text field; nonactivating keeps focus in the user's app otherwise
     override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
     func update(_ content: Content) { host.rootView = content }
 
@@ -46,4 +47,9 @@ final class FloatingPanel<Content: View>: NSPanel {
         f.origin.y = top - size.height
         setFrame(f, display: true)
     }
+}
+
+private final class EdgeToEdgeHostingView<Content: View>: NSHostingView<Content> {
+    override var safeAreaInsets: NSEdgeInsets { .init() }
+    override var safeAreaRect: NSRect { bounds }
 }

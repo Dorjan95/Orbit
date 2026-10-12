@@ -24,7 +24,7 @@ struct OnboardingView: View {
     @State private var projectURL: URL?
     @State private var projectName = ""
     @State private var projectAliases = ""
-    @State private var projectAgent: AgentKind = .claude
+    @State private var projectAgent: AgentKind = .codex
     @State private var dropTargeted = false
 
     private let titles = ["Benvenuto", "Permessi", "Tieni premuto e parla", "Agenti", "Voce", "Primo progetto"]
@@ -55,16 +55,28 @@ struct OnboardingView: View {
             footer.padding(24)
         }
         .frame(width: 540, height: 640)
-        .background(.ultraThinMaterial)
+        .background(OrbitDesign.screen)
+        .foregroundStyle(OrbitDesign.chalk).tint(OrbitDesign.lime).preferredColorScheme(.dark)
         .animation(Motion.spring, value: step)
         .onChange(of: step) { if step == 2 { startChordTest() } else { stopChordTest() } }
+        .task(id: step) {
+            guard step == 1 else { return }
+            // Permissions can be granted by the hands-free startup request or in System Settings.
+            // Refresh the rows rather than leaving the initial snapshot stuck on “Consenti”.
+            while !Task.isCancelled {
+                micOK = SpeechService.micStatus == .authorized
+                speechOK = SpeechService.speechStatus == .authorized
+                if micOK && speechOK { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
         .onDisappear { stopChordTest() }
     }
 
     private var dots: some View {
         HStack(spacing: 8) {
             ForEach(0..<6) { i in
-                Capsule().fill(i == step ? Color.accentColor : Color.primary.opacity(0.15)).frame(width: i == step ? 20 : 6, height: 6)
+                Capsule().fill(i == step ? OrbitDesign.lime : Color.primary.opacity(0.15)).frame(width: i == step ? 20 : 6, height: 6)
             }
         }
     }
@@ -73,9 +85,9 @@ struct OnboardingView: View {
         VStack(spacing: 8) {
             Image(systemName: symbols[step])
                 .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(OrbitDesign.lime)
                 .frame(width: 52, height: 52)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(OrbitDesign.lime.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.bottom, 6)
             Text(t).font(.system(size: 26, weight: .semibold)).tracking(-0.5)
             Text(sub).font(.system(size: 15)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
@@ -104,8 +116,8 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(spacing: 24) {
-            title("Jarvis", "Tieni premuto un tasto, di' cosa ti serve e Claude Code o Codex si mettono al lavoro in background.")
-            Text("Usa gli abbonamenti Claude Code e Codex che hai già. Costa crediti solo la voce di Fish Audio. C'è anche un modello gratuito.")
+            title("Orbit", "Di' cosa ti serve: Codex si mette al lavoro in background e Orbit ti aggiorna a voce.")
+            Text("Usa il login Codex con ChatGPT che hai già. La voce di macOS è inclusa; Fish Audio è facoltativo.")
                 .font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .padding(12).background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
@@ -152,20 +164,27 @@ struct OnboardingView: View {
 
     private var agents: some View {
         VStack(spacing: 16) {
-            title("Agenti", "Jarvis guida le CLI che hai già installato.")
-            check(claudeVersion != nil && claudeLoggedIn == true, "Claude Code",
+            title("Agenti", "Orbit guida le CLI che hai già installato.")
+            check(claudeVersion != nil && claudeLoggedIn == true, "Claude Code (facoltativo)",
                   detail: checkingAgents ? "Controllo in corso…" : (claudeVersion.map { "\($0) · \(claudeLoggedIn == true ? "login fatto" : "login da fare")" } ?? "Non trovato"),
                   action: checkingAgents ? nil : (claudeVersion == nil ? "Installa" : "Fai il login")) {
                 if claudeVersion == nil { NSWorkspace.shared.open(URL(string: "https://docs.anthropic.com/en/docs/claude-code")!) }
                 else { coordinator.openTerminal(at: URL(fileURLWithPath: NSHomeDirectory()), command: "claude auth login") }
             }
-            check(codexVersion != nil && codexLoggedIn == true, "Codex (facoltativo)",
-                  detail: checkingAgents ? "Controllo in corso…" : (codexVersion.map { "\($0) · \(codexLoggedIn == true ? "login fatto" : "login da fare")" } ?? "Non trovato"),
-                  action: checkingAgents ? nil : (codexVersion == nil ? "Installa" : "Fai il login")) {
+            check(codexVersion != nil && (coordinator.settings.settings.assistantBackend.provider.isLocal || codexLoggedIn == true), "Codex",
+                  detail: checkingAgents ? "Controllo in corso…" : (codexVersion.map { "\($0) · \(coordinator.settings.settings.assistantBackend.provider.isLocal ? "modello locale" : (codexLoggedIn == true ? "login fatto" : "login da fare"))" } ?? "Non trovato"),
+                  action: checkingAgents ? nil : (codexVersion == nil ? "Installa" : (coordinator.settings.settings.assistantBackend.provider.isLocal ? nil : "Fai il login"))) {
                 if codexVersion == nil { NSWorkspace.shared.open(URL(string: "https://github.com/openai/codex")!) }
                 else { coordinator.openTerminal(at: URL(fileURLWithPath: NSHomeDirectory()), command: "codex login") }
             }
-            Button("Ricontrolla") { Task { await detectAgents() } }.controlSize(.small)
+            Picker("Assistente vocale", selection: Binding(get: { coordinator.settings.settings.orchestratorAgent },
+                                                          set: { coordinator.settings.settings.orchestratorAgent = $0 })) {
+                ForEach(AgentKind.interpreterCases) { Text($0.displayName).tag($0) }
+            }
+            HStack {
+                Button("Ricontrolla") { Task { await detectAgents() } }
+                Button("Modelli locali…") { NSWorkspace.shared.open(URL(string: "orbit://settings?section=agents")!) }
+            }.controlSize(.small)
         }
         .task { await detectAgents() }
     }
@@ -195,7 +214,7 @@ struct OnboardingView: View {
             title("Primo progetto", "Trascina una cartella, dagli un nome e qualche soprannome da dire a voce.")
             VStack(spacing: 8) {
                 Image(systemName: projectURL == nil ? "folder.badge.plus" : "folder.fill")
-                    .font(.system(size: 20)).foregroundStyle(projectURL == nil ? Color.secondary : Color.accentColor)
+                    .font(.system(size: 20)).foregroundStyle(projectURL == nil ? Color.secondary : OrbitDesign.lime)
                 Text(projectURL?.path ?? "Trascina qui una cartella")
                     .font(.system(size: 13)).foregroundStyle(projectURL == nil ? .secondary : .primary)
                     .lineLimit(1).truncationMode(.middle)
@@ -204,10 +223,10 @@ struct OnboardingView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity)
-            .background(dropTargeted ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(dropTargeted ? OrbitDesign.lime.opacity(0.12) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(dropTargeted ? Color.accentColor : Color.clear, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    .strokeBorder(dropTargeted ? OrbitDesign.lime : Color.clear, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
             }
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .onTapGesture { pickProjectFolder() }
@@ -236,11 +255,12 @@ struct OnboardingView: View {
                 if step == 5, let u = projectURL, !projectName.isEmpty {
                     coordinator.registry.add(Project(name: projectName, path: u.path,
                                                      aliases: projectAliases.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
-                                                     defaultAgent: projectAgent))
+                                                     defaultAgent: projectAgent,
+                                                     permissionMode: coordinator.settings.settings.permissionMode(for: projectAgent)))
                 }
                 advance()
             }
-            .buttonStyle(.borderedProminent).disabled(!canContinue)
+            .buttonStyle(.borderedProminent).foregroundStyle(.black).disabled(!canContinue)
         }
     }
 
@@ -257,7 +277,10 @@ struct OnboardingView: View {
         switch step {
         case 1: micOK && speechOK
         case 2: chordPressed && chordReleased
-        case 3: claudeVersion != nil
+        case 3: coordinator.settings.settings.orchestratorAgent == .codex
+            ? (coordinator.settings.settings.assistantBackend.provider.isLocal
+               ? codexVersion != nil && coordinator.settings.settings.assistantBackend.configurationError == nil : codexLoggedIn == true)
+            : claudeLoggedIn == true
         case 5: projectURL != nil && !projectName.isEmpty || !coordinator.registry.projects.isEmpty
         default: true
         }

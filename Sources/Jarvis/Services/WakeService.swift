@@ -2,19 +2,19 @@ import Foundation
 import Speech
 import AVFoundation
 
-/// Hands-free activation: say "Jarvis" or clap twice (claps only
-/// count while Jarvis is idle, never while it talks or thinks). The mic stays open (macOS shows the orange dot) but nothing leaves
-/// the Mac: the name is spotted by Apple's on-device recognizer, never the server one (without on-device support the
+/// Hands-free activation: say "Hey Orbit" or clap twice (claps only
+/// count while Orbit is idle, never while it talks or thinks). The mic stays open (macOS shows the orange dot) but nothing leaves
+/// the Mac: the phrase is spotted by Apple's on-device recognizer, never the server one (without on-device support the
 /// service stays off). Claps are found by an energy detector on the raw samples.
 ///
-/// After the name (or the claps) the same recognizer keeps listening and captures the command: everything said after it, in one
-/// breath or after a pause, until 1.5 s without new words. While Jarvis talks, talking over it pauses it (see
-/// `novelTail`). The Coordinator makes the service busy while Jarvis thinks and stops it during push-to-talk,
+/// After the phrase (or the claps) the same recognizer keeps listening and captures the command: everything said after it, in one
+/// breath or after a pause, until 1.5 s without new words. While Orbit talks, talking over it pauses it (see
+/// `novelTail`). The Coordinator makes the service busy while Orbit thinks and stops it during push-to-talk,
 /// which uses its own audio engine.
 @MainActor
 final class WakeService {
-    enum Trigger: String { case name, clap, bargeIn }
-    /// What counts as a start: the name (idle), the user's words over Jarvis's (speaking), nothing (thinking).
+    enum Trigger: String { case name, clap, bargeIn, mascot }
+    /// What counts as a start: the name (idle), the user's words over Orbit's (speaking), nothing (thinking).
     enum Mode: Equatable { case idle, speaking, busy }
 
     var onWake: ((Trigger) -> Void)?
@@ -22,7 +22,7 @@ final class WakeService {
     var onCommand: ((String, Trigger) -> Void)?
     var onNothingHeard: ((Trigger) -> Void)?
     private var trigger: Trigger = .name
-    /// What Jarvis is saying right now (without echo cancellation the mic hears it too).
+    /// What Orbit is saying right now (without echo cancellation the mic hears it too).
     var echoText: () -> String = { "" }
 
     private(set) var isRunning = false
@@ -44,7 +44,7 @@ final class WakeService {
     private var committed = ""
     private var lastPartial = ""
     /// How many words may come before the name for it to be the call (and be cut off) rather than part of the
-    /// command: "Jarvis" inside the request ("il nostro nuovo prodotto, Jarvis") must stay in it.
+    /// command: "Orbit" inside the request ("il nostro nuovo prodotto, Orbit") must stay in it.
     private var nameWithin = 3
     private var lastChange = Date()
     private var captureStart = Date()
@@ -70,7 +70,7 @@ final class WakeService {
         }
         recognizer = r
         let input = engine.inputNode
-        // Echo cancellation, so Jarvis can be interrupted while it talks without hearing its own voice.
+        // Echo cancellation, so Orbit can be interrupted while it talks without hearing its own voice.
         // It changes the input format, so it goes on before the format is read.
         do { try input.setVoiceProcessingEnabled(echoCancellation) } catch { AppLog.write("wake: no echo cancellation \(error.localizedDescription)") }
         if input.isVoiceProcessingEnabled { input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min) }
@@ -89,7 +89,7 @@ final class WakeService {
         do { engine.prepare(); try engine.start() } catch { AppLog.write("wake: engine failed \(error.localizedDescription)"); return }
         isRunning = true
         restartRecognition()
-        AppLog.write("wake: listening for \"Jarvis\"")
+        AppLog.write("wake: listening for \"Hey Orbit\"")
     }
 
     func stop() {
@@ -109,7 +109,7 @@ final class WakeService {
         if isRunning, m != .busy { restartRecognition() }
     }
 
-    /// Claps count only while Jarvis is idle: its own voice or a sound it plays must never start it.
+    /// Claps count only while Orbit is idle: its own voice or a sound it plays must never start it.
     private func updateClaps() { box?.clapsEnabled = clapEnabled && mode == .idle && !capturing }
 
     private func clapHeard() {
@@ -129,6 +129,7 @@ final class WakeService {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = true
         req.taskHint = .dictation
+        req.contextualStrings = ["Hey Orbit", "Ehi Orbit"]
         request = req
         requestStart = box?.attach(req, replayFrom: replayFrom) ?? 0
         let start = requestStart, sr = sampleRate
@@ -153,14 +154,14 @@ final class WakeService {
         restartTimer = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(50))
             guard let self, !Task.isCancelled, self.isRunning, !self.capturing else { return }
-            // Replay the last second so a "Jarvis" said right at the switch is not cut in half.
+            // Replay the last second so "Hey Orbit" at the switch is not cut in half.
             self.restartRecognition(replayFrom: (self.box?.totalSamples ?? 0) - Int(self.sampleRate))
         }
     }
 
     private func heard(_ text: String) {
         if capturing {
-            // After "Jarvis" and a pause Apple often restarts the transcription from scratch, without the name:
+            // After "Hey Orbit" and a pause Apple often restarts the transcription without the phrase:
             // bank what we had and append the new text instead of losing it (the bug of 29/09).
             if Self.isRestart(from: lastPartial, to: text) { committed = Self.join(committed, Self.strip(lastPartial, within: nameWithin)); nameWithin = 3 }
             lastPartial = text
@@ -172,14 +173,14 @@ final class WakeService {
         switch mode {
         case .busy: return
         case .speaking:
-            // Talking over Jarvis. With echo cancellation any two words stop it; without, the mic also hears Jarvis
+            // Talking over Orbit. With echo cancellation any two words stop it; without, the mic also hears Orbit
             // itself, so only its name does, and the command starts clean after the name.
             if echoCancelling {
                 guard text.split(separator: " ").count >= 2 || Self.commandAfterWakeWord(in: text) != nil else { return }
                 beginCapture(.bargeIn, initial: Self.commandAfterWakeWord(in: text) ?? text)
             } else {
-                // The mic hears Jarvis too: words Jarvis is not saying are the user's. Two in a row among the last
-                // six words, or the name (when Jarvis is not saying it), and it stops to listen.
+                // The mic hears Orbit too: words Orbit is not saying are the user's. Two in a row among the last
+                // six words, or the name (when Orbit is not saying it), and it stops to listen.
                 let spoken = echoText()
                 let novel = Self.novelTail(heard: text, spoken: spoken)
                 let named = Self.commandAfterWakeWord(in: text) != nil && Self.commandAfterWakeWord(in: spoken) == nil
@@ -210,6 +211,16 @@ final class WakeService {
 
     // MARK: Capture
 
+    /// Reuse the same silence detection and transcript flow for a desktop click.
+    @discardableResult
+    func captureFromMascot() -> Bool {
+        guard isRunning, !capturing else { return false }
+        beginCapture(.mascot, initial: "")
+        return true
+    }
+
+    func finishFromMascot() { finishCapture() }
+
     private func beginCapture(_ trigger: Trigger, initial: String) {
         capturing = true
         self.trigger = trigger
@@ -218,13 +229,14 @@ final class WakeService {
         restartTimer?.cancel()
         updateClaps()
         // After a clap the command is everything said next, from a clean transcript.
-        if trigger == .clap || (trigger == .bargeIn && !echoCancelling) { restartRecognition() }
+        if trigger == .clap || trigger == .mascot || (trigger == .bargeIn && !echoCancelling) { restartRecognition() }
         if trigger == .bargeIn && !echoCancelling { committed = initial }   // the words that interrupted it are the start of the command
         onWake?(trigger)
         captureLoop?.cancel()
         captureLoop = Task { @MainActor [weak self] in
             while let self, self.capturing, !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled, self.capturing else { return }
                 let quiet = Date().timeIntervalSince(self.lastChange)
                 let total = Date().timeIntervalSince(self.captureStart)
                 let hasWords = !self.command.trimmingCharacters(in: .whitespaces).isEmpty
@@ -249,9 +261,9 @@ final class WakeService {
 
     // MARK: Pure helpers (tested)
 
-    /// The user's words in a transcript heard while Jarvis talks: among the last six words, those of 4+ letters that
-    /// are not (roughly) in what Jarvis is saying. Not only a trailing run: when both talk, the recognizer interleaves
-    /// the two voices. Short words are ignored because Jarvis's own voice, misheard, turns into them
+    /// The user's words in a transcript heard while Orbit talks: among the last six words, those of 4+ letters that
+    /// are not (roughly) in what Orbit is saying. Not only a trailing run: when both talk, the recognizer interleaves
+    /// the two voices. Short words are ignored because Orbit's own voice, misheard, turns into them
     /// ("Rossi Srl propone" → "cad pro", 29/09).
     nonisolated static func novelTail(heard: String, spoken: String) -> [String] {
         func words(_ s: String) -> [String] {
@@ -268,18 +280,18 @@ final class WakeService {
         return words(heard).suffix(6).filter { !known($0) }
     }
 
-    /// Whether words heard over Jarvis were really the user: three words or more, or a word that means "stop".
-    /// Fewer (like "mind cioè", Jarvis's own "Mastermind" misheard) and Jarvis resumes talking.
+    /// Whether words heard over Orbit were really the user: three words or more, or a word that means "stop".
+    /// Fewer (like "mind cioè", Orbit's own "Mastermind" misheard) and Orbit resumes talking.
     nonisolated static func isRealInterruption(_ cmd: String) -> Bool {
         let w = cmd.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "it_IT"))
             .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
-        let stops: Set<String> = ["basta", "stop", "ferma", "fermati", "aspetta", "zitto", "silenzio", "jarvis", "giarvis", "ok", "grazie", "no", "si", "scusa", "alt"]
-        return w.count >= 3 || w.contains { stops.contains($0) }
+        let stops: Set<String> = ["basta", "stop", "ferma", "fermati", "aspetta", "zitto", "silenzio", "ok", "grazie", "no", "si", "scusa", "alt"]
+        return commandAfterWakeWord(in: cmd) != nil || w.count >= 3 || w.contains { stops.contains($0) }
     }
 
     /// The part of a transcript that belongs to the command: after the name when the name opens it (at most
     /// `within` words before it), else all of it. A name later in the sentence is part of the request: cutting
-    /// there threw away "crea un sito … del nostro nuovo prodotto Jarvis" and left an empty command (29/09).
+    /// there threw away "crea un sito … del nostro nuovo prodotto Orbit" and left an empty command (29/09).
     nonisolated static func strip(_ text: String, within: Int = 3) -> String {
         let ns = text as NSString
         guard let re = try? NSRegularExpression(pattern: wakePattern, options: [.caseInsensitive]),
@@ -312,9 +324,11 @@ final class WakeService {
         return b.isEmpty ? a : a + " " + b
     }
 
-    nonisolated static let wakePattern = #"\b(jarvis|giarvis|gervis|jervis|jarvi|giarvi|jarbis|gervais|giarvisse|jarviss)\b[\s,.!?:;]*"#
+    // Italian dictation may transcribe the spoken "hey" as "ehi". Both require
+    // the complete phrase; the app name alone must never be a wake phrase.
+    nonisolated static let wakePattern = #"\b(?:hey|ehi)\b[\s,.!?:;]+(?:orbit|òrbit|órbit)\b[\s,.!?:;]*"#
 
-    /// Text after the last "Jarvis" (and the ways Italian dictation writes it), or nil if the name is not there.
+    /// Text after the last complete "Hey Orbit", or nil if the phrase is absent.
     nonisolated static func commandAfterWakeWord(in text: String) -> String? {
         guard let re = try? NSRegularExpression(pattern: wakePattern, options: [.caseInsensitive]) else { return nil }
         let ns = text as NSString
@@ -346,7 +360,7 @@ final class WakeTapBox: @unchecked Sendable {
     private var lastLevel = DispatchTime.now()
     /// The last ~3 s of audio, so a new recognition request can start from where the old one stopped listening:
     /// Apple closes a segment after a pause, and whatever was said before the next request opened was lost
-    /// ("Jarvis… che ore sono" came back empty, 29/09).
+    /// (a wake phrase followed by a pause used to yield an empty command).
     private var ring: [(start: Int, buffer: AVAudioPCMBuffer)] = []
     private var total = 0
     private let keep: Int

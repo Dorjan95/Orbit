@@ -7,6 +7,10 @@ enum AgentEvent: Equatable, Sendable {
     case text(String)              // assistant prose
     case needsInput                // permission denial / blocked
     case result(text: String, isError: Bool)
+    case turnEnded(BackendTurnOutcome)
+    case streamComplete
+    case approvalRequested(AgentApproval)
+    case approvalExpired(UUID)
 }
 
 /// Parser for `claude -p --output-format stream-json --verbose` NDJSON.
@@ -98,6 +102,12 @@ enum CodexStreamParser {
                 if let p = paths.first { return [.activity("Modifica \(p.split(separator: "/").suffix(2).joined(separator: "/"))")] }
             case "command_execution":
                 if let c = item["command"] as? String { return [.activity("Esegue \(c.prefix(60))")] }
+            case "mcp_tool_call":
+                let server = item["server"] as? String ?? "MCP"
+                let tool = item["tool"] as? String ?? "strumento"
+                return [.activity("Usa \(server): \(tool)")]
+            case "web_search":
+                return [.activity("Cerca sul web")]
             case "reasoning":
                 return [.activity("Sta ragionando…")]
             default: break
@@ -117,12 +127,39 @@ enum CodexStreamParser {
 /// it wrote or edited. Nil if it opened something itself or produced nothing to look at. Sessions were told to open
 /// their result and ignored it (29/09, the clock page), so Jarvis does it from the session log.
 enum SessionResult {
-    static func viewable(ndjson: String, resultText: String) -> URL? {
+    static func viewable(ndjson: String, resultText: String, projectPath: String? = nil) -> URL? {
         var page: String?
         var openedItself = false
         for line in ndjson.split(separator: "\n") {
-            guard let d = line.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  o["type"] as? String == "assistant", let m = o["message"] as? [String: Any],
+            guard let d = line.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+            let type = o["type"] as? String
+            let method = o["method"] as? String
+            if type == "thread.started" || method == "turn/started" || (type == "system" && o["subtype"] as? String == "init") {
+                page = nil; openedItself = false
+            }
+            if method == "item/completed", let params = o["params"] as? [String: Any], let item = params["item"] as? [String: Any] {
+                if item["type"] as? String == "fileChange", item["status"] as? String == "completed" {
+                    for change in item["changes"] as? [[String: Any]] ?? [] {
+                        if let path = change["path"] as? String, (change["kind"] as? [String: Any])?["type"] as? String != "delete",
+                           ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) { page = path }
+                    }
+                }
+                if item["type"] as? String == "commandExecution", item["exitCode"] as? Int == 0,
+                   let cmd = item["command"] as? String,
+                   cmd.range(of: #"(^|[;&|\s'"])(/usr/bin/)?open\s"#, options: .regularExpression) != nil { openedItself = true }
+            }
+            if type == "item.completed", let item = o["item"] as? [String: Any] {
+                if item["type"] as? String == "file_change", item["status"] as? String != "failed" {
+                    for change in item["changes"] as? [[String: Any]] ?? [] {
+                        if let path = change["path"] as? String, change["kind"] as? String != "delete",
+                           ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) { page = path }
+                    }
+                }
+                if item["type"] as? String == "command_execution", item["exit_code"] as? Int == 0,
+                   let cmd = item["command"] as? String,
+                   cmd.range(of: #"(^|[;&|\s'"])(/usr/bin/)?open\s"#, options: .regularExpression) != nil { openedItself = true }
+            }
+            guard type == "assistant", let m = o["message"] as? [String: Any],
                   let content = m["content"] as? [[String: Any]] else { continue }
             for b in content where b["type"] as? String == "tool_use" {
                 let input = b["input"] as? [String: Any] ?? [:]
@@ -134,7 +171,12 @@ enum SessionResult {
         if let r = resultText.range(of: #"https?://(localhost|127\.0\.0\.1)(:\d+)?[^\s)`'"]*"#, options: .regularExpression) {
             return URL(string: String(resultText[r]))
         }
-        return page.map { URL(fileURLWithPath: $0) }
+        return page.map { path in
+            if !(path as NSString).isAbsolutePath, let projectPath {
+                return URL(fileURLWithPath: projectPath, isDirectory: true).appendingPathComponent(path)
+            }
+            return URL(fileURLWithPath: path)
+        }
     }
 }
 

@@ -63,8 +63,12 @@ final class OrchestratorTests: XCTestCase {
     }
 
     func testRunnerArguments() {
-        XCTAssertEqual(AgentRunner.arguments(agent: .codex, task: "t", mode: .acceptEdits, resume: nil).prefix(2), ["exec", "--json"])
-        XCTAssertEqual(AgentRunner.arguments(agent: .codex, task: "t", mode: .acceptEdits, resume: "abc").prefix(3), ["exec", "resume", "abc"])
+        let start = AgentRunner.arguments(agent: .codex, task: "t", mode: .acceptEdits, resume: nil)
+        XCTAssertEqual(start.first, "exec")
+        XCTAssertTrue(start.contains("--json"))
+        let resume = AgentRunner.arguments(agent: .codex, task: "t", mode: .acceptEdits, resume: "abc")
+        XCTAssertLessThan(resume.firstIndex(of: "-s")!, resume.firstIndex(of: "resume")!)
+        XCTAssertEqual(resume[resume.firstIndex(of: "resume")! + 1], "abc")
         XCTAssertTrue(AgentRunner.arguments(agent: .codex, task: "t", mode: .bypassPermissions, resume: nil).contains("--dangerously-bypass-approvals-and-sandbox"))
         let c = AgentRunner.arguments(agent: .claude, task: "t", mode: .acceptEdits, resume: "sid")
         XCTAssertTrue(c.contains("--resume")); XCTAssertTrue(c.contains("acceptEdits")); XCTAssertTrue(c.contains("stream-json"))
@@ -94,23 +98,33 @@ final class StoreTests: XCTestCase {
     }
 
     func testWakeWordCommand() {
-        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "Jarvis, apri Prisma nel terminale"), "apri Prisma nel terminale")
-        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "stavo dicendo che Giarvis a che punto sei"), "a che punto sei")
-        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "Jarvis"), "")
-        XCTAssertNil(WakeService.commandAfterWakeWord(in: "ho parlato con Travis ieri"))
-        XCTAssertNil(WakeService.commandAfterWakeWord(in: "apri il sito"))
-        // "Jarvis" then a pause: Apple restarts from scratch without the name, and the words must still count.
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "Hey Orbit, apri Prisma nel terminale"), "apri Prisma nel terminale")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "stavo dicendo che ehi Òrbit a che punto sei"), "a che punto sei")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "Hey Orbit"), "")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "HEY, ORBIT! avvia Demo"), "avvia Demo")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "Ehi Órbit, apri il sito"), "apri il sito")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "hey\nOrbit apri"), "apri")
+        for text in ["Orbit", "Orbit apri il sito", "ORBIT! avvia Demo", "Òrbit", "Hey", "heyorbit", "they orbit", "Ehi", "ehiorbita", "Hey orbita", "hey orbital", "hey orbitale", "hey unorbit", "Hey Jarvis apri il sito", "Giarvis", "ho parlato con Travis ieri", "apri il sito", "hey apri il progetto Orbit"] {
+            XCTAssertNil(WakeService.commandAfterWakeWord(in: text), text)
+        }
+        // A pause after the wake phrase may restart the transcript without it.
         XCTAssertEqual(WakeService.strip("a che punto sei"), "a che punto sei")
-        XCTAssertEqual(WakeService.strip("Jarvis apri"), "apri")
-        XCTAssertEqual(WakeService.strip("ok Jarvis apri"), "apri")
-        // The name inside the request is part of it (29/09: the whole command was lost).
-        XCTAssertEqual(WakeService.strip("voglio che mi crei un sito web del nostro nuovo prodotto ossia Jarvis"),
-                       "voglio che mi crei un sito web del nostro nuovo prodotto ossia Jarvis")
-        XCTAssertEqual(WakeService.strip("Jarvis crea un sito sul prodotto Jarvis"), "crea un sito sul prodotto Jarvis")
-        XCTAssertEqual(WakeService.strip("allora senti un attimo Jarvis apri Prisma", within: WakeService.wordsBeforeLastName(in: "allora senti un attimo Jarvis") + 1), "apri Prisma")
-        XCTAssertTrue(WakeService.isRestart(from: "Jarvis apri", to: "il sito"))
-        XCTAssertFalse(WakeService.isRestart(from: "Jarvis apri", to: "Jarvis apri il sito"))
-        XCTAssertFalse(WakeService.isRestart(from: "Jarvis apri il", to: "Jarvis apri i"))
+        XCTAssertEqual(WakeService.strip("Hey Orbit apri"), "apri")
+        XCTAssertEqual(WakeService.strip("ok Hey Orbit apri"), "apri")
+        XCTAssertEqual(WakeService.strip("Orbit apri"), "Orbit apri")
+        // Mentioning the app or product inside a command must preserve the task.
+        XCTAssertEqual(WakeService.strip("voglio che mi crei un sito web del nostro nuovo prodotto ossia Orbit"),
+                       "voglio che mi crei un sito web del nostro nuovo prodotto ossia Orbit")
+        XCTAssertEqual(WakeService.strip("Hey Orbit crea un sito sul prodotto Orbit"), "crea un sito sul prodotto Orbit")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "Hey Orbit crea un sito sul prodotto Orbit"), "crea un sito sul prodotto Orbit")
+        XCTAssertEqual(WakeService.commandAfterWakeWord(in: "hey orbit apri, hey orbit chiudi"), "chiudi")
+        XCTAssertEqual(WakeService.strip("allora senti un attimo Hey Orbit apri Prisma", within: WakeService.wordsBeforeLastName(in: "allora senti un attimo Hey Orbit") + 1), "apri Prisma")
+        XCTAssertEqual(WakeService.wordsBeforeLastName(in: "allora senti Hey Orbit"), 2)
+        XCTAssertTrue(WakeService.isRestart(from: "Hey Orbit apri", to: "il sito"))
+        XCTAssertFalse(WakeService.isRestart(from: "Hey Orbit apri", to: "Hey Orbit apri il sito"))
+        XCTAssertFalse(WakeService.isRestart(from: "Hey Orbit apri il", to: "Hey Orbit apri i"))
+        XCTAssertFalse(WakeService.isRealInterruption("Orbit"))
+        XCTAssertTrue(WakeService.isRealInterruption("Hey Orbit"))
     }
 
     func testClapDetector() {

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct JarvisMain {
+struct OrbitMain {
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -20,13 +20,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var pillPanel: FloatingPanel<ListeningPillView>!
     private var overlayPanel: FloatingPanel<SessionsOverlayView>!
+    private var mascotPanel: FloatingPanel<OrbitMascotView>!
+    private var positioningPanels = false
+    private var draggingMascot = false
+    private let mascotAnimation = OrbitAnimationModel()
+    private var knownSessionStatuses: [String: SessionStatus] = [:]
+    private var draggingOverlay = false
     private var settingsWindow: NSWindow?
+    /// Keep the overlay preference while the main window temporarily replaces it.
+    private var settingsPresented = false
     private var onboardingWindow: NSWindow?
     private var observation: Task<Void, Never>?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard Self.acquireSingleInstanceLock() else {
-            // Another Jarvis is already running — bail out before touching any JSON store.
+            // Another Orbit is already running — bail out before touching any JSON store.
             NSApp.terminate(nil); return
         }
         coordinator = Coordinator()
@@ -45,12 +53,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         installMainMenu()
         setupTray()
         setupPanels()
-        coordinator.onPillChanged = { [weak self] in self?.refreshPill() }
-        coordinator.onLevelChanged = { [weak self] in self?.pillPanel.update(ListeningPillView(model: self!.coordinator.pill)) }
+        coordinator.onPillChanged = { [weak self] in self?.refreshPill(); self?.refreshMascot() }
+        coordinator.onLevelChanged = { [weak self] in guard let self else { return }; self.pillPanel.update(self.pillView()) }
         coordinator.onOverlayToggle = { [weak self] in self?.toggleOverlay() }
+        knownSessionStatuses = Dictionary(uniqueKeysWithValues: coordinator.sessions.sessions.map { ($0.id, $0.status) })
         startObserving()
         installSignalHandlers()
         if !coordinator.settings.settings.onboardingComplete { showOnboarding() }
+        else if SpeechService.micStatus == .notDetermined || SpeechService.speechStatus == .notDetermined {
+            // Ad-hoc rebuilds can reset TCC grants. Ask again rather than leaving
+            // an already-configured voice assistant silently unable to listen.
+            Task { @MainActor [weak self] in
+                let result = await SpeechService.requestPermissions()
+                AppLog.write("updated app permissions: mic=\(result.mic) speech=\(result.speech)")
+                self?.coordinator.refreshWake()
+            }
+        }
         if coordinator.settings.settings.overlayVisible { showOverlay() }
         launched = true
         let queued = pendingURLs; pendingURLs = []
@@ -74,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let main = NSMenu()
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "Esci da Jarvis", action: #selector(quit), keyEquivalent: "q").target = self
+        appMenu.addItem(withTitle: "Esci da Orbit", action: #selector(quit), keyEquivalent: "q").target = self
         let editItem = NSMenuItem(); main.addItem(editItem)
         let edit = NSMenu(title: "Modifica"); editItem.submenu = edit
         edit.addItem(withTitle: "Annulla", action: Selector(("undo:")), keyEquivalent: "z")
@@ -94,15 +112,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateTrayIcon()
         let menu = NSMenu()
         menu.addItem(withTitle: "Mostra o nascondi le sessioni", action: #selector(toggleOverlayAction), keyEquivalent: "")
-        handsFreeItem = menu.addItem(withTitle: "Ascolta quando dici «Jarvis» o batti le mani", action: #selector(toggleHandsFree), keyEquivalent: "")
+        menu.addItem(withTitle: "Pannello delle sessioni…", action: #selector(showSessions), keyEquivalent: "")
+        handsFreeItem = menu.addItem(withTitle: "Ascolta quando dici «Hey Orbit» o batti le mani", action: #selector(toggleHandsFree), keyEquivalent: "")
         handsFreeItem?.state = coordinator.settings.settings.handsFree ? .on : .off
         menu.addItem(.separator())
         menu.addItem(withTitle: "Progetti…", action: #selector(showProjects), keyEquivalent: "")
         menu.addItem(withTitle: "Impostazioni…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Rifai la configurazione iniziale", action: #selector(showOnboardingAction), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Informazioni su Jarvis", action: #selector(showAbout), keyEquivalent: "")
-        menu.addItem(withTitle: "Esci da Jarvis", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Informazioni su Orbit", action: #selector(showAbout), keyEquivalent: "")
+        menu.addItem(withTitle: "Esci da Orbit", action: #selector(quit), keyEquivalent: "q")
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
     }
@@ -118,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateTrayIcon() {
         guard let button = statusItem.button else { return }
         let running = !coordinator.sessions.running.isEmpty
-        let img = NSImage(systemSymbolName: running ? "waveform.badge.magnifyingglass" : "waveform", accessibilityDescription: "Jarvis")
+        let img = NSImage(systemSymbolName: running ? "waveform.badge.magnifyingglass" : "waveform", accessibilityDescription: "Orbit")
         let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         button.image = img?.withSymbolConfiguration(cfg)
         button.image?.isTemplate = true
@@ -146,12 +165,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         _ = self.coordinator.settings.settings.overlayOpacity
                         _ = self.coordinator.settings.settings.pushToTalk
                         _ = self.coordinator.settings.settings.handsFree
+                        _ = self.coordinator.settings.settings.showIdlePill
+                        _ = self.coordinator.settings.settings.mascotEnabled
+                        _ = self.coordinator.settings.settings.mascotSize
+                        _ = self.coordinator.settings.settings.mascotOrigin
+                        _ = self.coordinator.settings.settings.mascotAnimations
+                        _ = self.coordinator.settings.settings.mascotShowStatus
+                        _ = self.coordinator.settings.settings.codexAssistantSelection.provider
+                        _ = self.coordinator.settings.settings.orchestratorAgent
                     } onChange: { c.resume() }
                 }
                 self.updateTrayIcon()
                 self.handsFreeItem?.state = self.coordinator.settings.settings.handsFree ? .on : .off
+                self.refreshPill()
                 self.refreshOverlay()
-                // A session Jarvis just started: show the panel top-right so it is visible without ⇧⌘O.
+                for session in self.coordinator.sessions.sessions {
+                    if !session.pendingApprovals.isEmpty, self.knownSessionStatuses[session.id] != .needsInput,
+                       !self.overlayPanel.isVisible { self.showOverlay() }
+                    if let old = self.knownSessionStatuses[session.id], old.isOngoing, old != session.status {
+                        if session.status == .done { self.mascotAnimation.react(.success, duration: self.coordinator.settings.settings.mascotReactionDuration(for: .success)) }
+                        else if session.status == .failed { self.mascotAnimation.react(.error, duration: self.coordinator.settings.settings.mascotReactionDuration(for: .error)) }
+                    }
+                }
+                self.knownSessionStatuses = Dictionary(uniqueKeysWithValues: self.coordinator.sessions.sessions.map { ($0.id, $0.status) })
+                self.refreshMascot()
+                // A session Orbit just started: show the panel top-right so it is visible without ⇧⌘O.
                 let running = Set(self.coordinator.sessions.running.map(\.id))
                 if !running.subtracting(self.knownRunning).isEmpty, !self.overlayPanel.isVisible { self.showOverlay() }
                 self.knownRunning = running
@@ -163,55 +201,139 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: Panels
 
     private func setupPanels() {
-        pillPanel = FloatingPanel(content: ListeningPillView(model: coordinator.pill), draggable: false)
+        pillPanel = FloatingPanel(content: pillView(), draggable: false)
         pillPanel.alphaValue = 0
         overlayPanel = FloatingPanel(content: overlayView(), draggable: true)
         overlayPanel.delegate = self
         overlayPanel.alphaValue = 0
+        mascotPanel = FloatingPanel(content: mascotView(), draggable: true)
+        mascotPanel.delegate = self
+        refreshPill()
         refreshOverlay()
+        refreshMascot()
+        NotificationCenter.default.addObserver(self, selector: #selector(screenLayoutChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
+
+    private var primaryScreen: NSScreen? {
+        NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private func pillView() -> ListeningPillView {
+        let settings = coordinator.settings.settings
+        return ListeningPillView(model: coordinator.pill,
+            projectName: coordinator.sessions.running.first?.projectName ?? "",
+            runningCount: coordinator.sessions.running.count,
+            backendLabel: settings.orchestratorAgent == .codex ? settings.assistantBackend.label : "Claude",
+            onToggle: { [weak self] in self?.toggleOverlay() })
+    }
+
+    @objc private func screenLayoutChanged() { refreshPill(); refreshOverlay(); refreshMascot() }
 
     private func overlayView() -> SessionsOverlayView {
         SessionsOverlayView(store: coordinator.sessions, chord: coordinator.settings.settings.pushToTalk,
+                            maximumHeight: max(160, min(560, (overlayPanel?.screen ?? primaryScreen)?.visibleFrame.height ?? 900) - 48),
                             onClose: { [weak self] in self?.hideOverlay() },
                             onOpen: { [weak self] s in self?.coordinator.open(session: s) },
                             onLog: { [weak self] s in self?.coordinator.showLog(s) },
                             onReply: { [weak self] s, t in self?.coordinator.followUp(session: s, task: t) },
                             onStop: { [weak self] s in self?.coordinator.stop(sessionID: s.id) },
                             onDismiss: { [weak self] s in self?.coordinator.sessions.dismiss(s.id) },
-                            onClear: { [weak self] in self?.coordinator.clearHistory() })
+                            onClear: { [weak self] in self?.coordinator.clearHistory() },
+                            onResumePending: { [weak self] s in self?.coordinator.resumePending(sessionID: s.id) },
+                            onApproval: { [weak self] s, approval, option in self?.coordinator.resolveApproval(sessionID: s.id, approvalID: approval, optionID: option) },
+                            onPlanDecision: { [weak self] s, approve in self?.coordinator.decidePlan(sessionID: s.id, approve: approve) },
+                            onSteer: { [weak self] s, task in self?.coordinator.steer(sessionID: s.id, task: task) ?? false },
+                            onDragState: { [weak self] dragging in
+                                guard let self else { return }
+                                self.draggingOverlay = dragging
+                                if !dragging {
+                                    self.coordinator.settings.settings.overlayOrigin = self.overlayPanel.frame.origin
+                                    self.refreshOverlay()
+                                }
+                            })
     }
 
     private func refreshOverlay() {
+        guard !draggingOverlay else { return }
+        positioningPanels = true
+        defer { positioningPanels = false }
         overlayPanel.update(overlayView())
-        overlayPanel.alphaValue = overlayPanel.isVisible ? coordinator.settings.settings.overlayOpacity : 0
-        let wasOrigin = overlayPanel.frame.origin
         overlayPanel.fitToContent(anchorTopCenter: false)
-        if !overlayPanel.isVisible { overlayPanel.setFrameOrigin(wasOrigin) }
+        positionOverlay()
+        overlayPanel.alphaValue = overlayPanel.isVisible ? coordinator.settings.settings.overlayOpacity : 0
+    }
+
+    private func positionOverlay() {
+        guard let screen = primaryScreen else { return }
+        let size = overlayPanel.frame.size
+        let origin = coordinator.settings.settings.overlayOrigin ?? CGPoint(x: screen.visibleFrame.maxX - size.width - 24, y: screen.visibleFrame.maxY - size.height - 24)
+        let frame = DesktopLayout.fittedFrame(origin: origin, size: size,
+            screens: NSScreen.screens.map(\.visibleFrame), fallback: screen.visibleFrame)
+        overlayPanel.setFrame(frame, display: true)
     }
 
     private func refreshPill() {
-        let model = coordinator.pill
-        pillPanel.update(ListeningPillView(model: model))
-        if model.visible {
-            positionPillTopCenter()
+        pillPanel.update(pillView())
+        positionPillTopCenter()
+        let visible = coordinator.pill.visible || coordinator.settings.settings.showIdlePill
+        if visible {
             if !pillPanel.isVisible {
                 pillPanel.alphaValue = 0
                 pillPanel.orderFrontRegardless()
-                animate(pillPanel, alpha: 1, scaleFrom: 0.96)
+                animate(pillPanel, alpha: 1, scaleFrom: 1)
             }
-        } else if pillPanel.isVisible {
-            animate(pillPanel, alpha: 0, scaleFrom: 1) { [weak self] in Task { @MainActor in self?.pillPanel.orderOut(nil) } }
+        } else {
+            pillPanel.orderOut(nil)
         }
     }
 
     private func positionPillTopCenter() {
         pillPanel.fitToContent(anchorTopCenter: true)
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let vf = screen.visibleFrame
-        let size = pillPanel.frame.size
-        let y = vf.maxY - 12 - size.height
-        pillPanel.setFrameOrigin(NSPoint(x: vf.midX - size.width / 2, y: y))
+        guard let screen = primaryScreen else { return }
+        let frame = DesktopLayout.pillFrame(visible: screen.visibleFrame, size: pillPanel.frame.size)
+        pillPanel.setFrame(frame, display: true)
+    }
+
+    private func mascotView() -> OrbitMascotView {
+        let settings = coordinator.settings.settings
+        return OrbitMascotView(model: coordinator.pill, animation: mascotAnimation, runningCount: coordinator.sessions.running.count,
+            pendingCount: coordinator.sessions.activeVisible.filter { $0.status == .needsInput }.count,
+            size: CGFloat(settings.mascotSize), animations: settings.mascotAnimations,
+            showStatus: settings.mascotShowStatus, clipAssignments: settings.mascotClipAssignments,
+            onListen: { [weak self] in
+                guard let self, self.coordinator.settings.settings.mascotEnabled else { return }
+                self.coordinator.toggleMascotListening()
+            },
+            onOpen: { [weak self] in self?.toggleOverlay() },
+            onSettings: { [weak self] in self?.presentSettings(section: .mascot) },
+            onHide: { [weak self] in self?.coordinator.settings.settings.mascotEnabled = false },
+            onDragState: { [weak self] dragging in
+                guard let self else { return }
+                self.draggingMascot = dragging
+                self.mascotAnimation.dragging = dragging
+                if !dragging {
+                    self.coordinator.settings.settings.mascotOrigin = self.mascotPanel.frame.origin
+                    self.refreshMascot()
+                }
+            })
+    }
+
+    private func refreshMascot() {
+        mascotAnimation.syncListening(active: coordinator.pill.visible && coordinator.pill.state == .listening)
+        mascotAnimation.syncThinking(active: coordinator.pill.visible && coordinator.pill.state == .thinking)
+        guard !draggingMascot, let mascotPanel, let screen = primaryScreen else { return }
+        positioningPanels = true
+        defer { positioningPanels = false }
+        let settings = coordinator.settings.settings
+        if settings.mascotEnabled, !mascotAnimation.displayed { mascotAnimation.react(.greeting, duration: settings.mascotReactionDuration(for: .greeting)) }
+        mascotAnimation.displayed = settings.mascotEnabled
+        mascotPanel.update(mascotView())
+        mascotPanel.fitToContent(anchorTopCenter: false)
+        let frame = DesktopLayout.fittedFrame(origin: settings.mascotOrigin, size: mascotPanel.frame.size,
+            screens: NSScreen.screens.map(\.visibleFrame), fallback: screen.visibleFrame)
+        mascotPanel.setFrame(frame, display: true)
+        if settings.mascotEnabled { mascotPanel.orderFrontRegardless() }
+        else { mascotPanel.orderOut(nil) }
     }
 
     private func animate(_ panel: NSPanel, alpha: CGFloat, scaleFrom: CGFloat, completion: (@Sendable () -> Void)? = nil) {
@@ -230,28 +352,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showOverlay() {
-        refreshOverlay()
-        if let o = coordinator.settings.settings.overlayOrigin, NSScreen.screens.contains(where: { $0.frame.contains(o) }) {
-            overlayPanel.setFrameOrigin(o)
-        } else if let s = NSScreen.main {
-            overlayPanel.setFrameOrigin(NSPoint(x: s.visibleFrame.maxX - 380 - 24, y: s.visibleFrame.maxY - 24 - overlayPanel.frame.height))
+        coordinator.settings.settings.overlayVisible = true
+        guard !settingsPresented else {
+            overlayPanel.orderOut(nil)
+            return
         }
+        refreshOverlay()
         overlayPanel.alphaValue = 0
         overlayPanel.orderFrontRegardless()
         animate(overlayPanel, alpha: coordinator.settings.settings.overlayOpacity, scaleFrom: 0.96)
-        coordinator.settings.settings.overlayVisible = true
     }
 
     private func hideOverlay() {
-        animate(overlayPanel, alpha: 0, scaleFrom: 1) { [weak self] in Task { @MainActor in self?.overlayPanel.orderOut(nil) } }
         coordinator.settings.settings.overlayVisible = false
+        animate(overlayPanel, alpha: 0, scaleFrom: 1) { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.coordinator.settings.settings.overlayVisible || self.settingsPresented else { return }
+                self.overlayPanel.orderOut(nil)
+            }
+        }
     }
 
-    private func toggleOverlay() { overlayPanel.isVisible ? hideOverlay() : showOverlay() }
+    private func toggleOverlay() {
+        if settingsPresented { presentSettings(section: .sessions) }
+        else { overlayPanel.isVisible ? hideOverlay() : showOverlay() }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === settingsWindow else { return }
+        settingsPresented = false
+        if coordinator.settings.settings.overlayVisible { showOverlay() }
+    }
 
     func windowDidMove(_ notification: Notification) {
-        guard (notification.object as? NSPanel) === overlayPanel, overlayPanel.isVisible else { return }
-        coordinator.settings.settings.overlayOrigin = overlayPanel.frame.origin
+        guard !positioningPanels, let panel = notification.object as? NSPanel, panel.isVisible else { return }
+        if panel === overlayPanel, !draggingOverlay { coordinator.settings.settings.overlayOrigin = panel.frame.origin }
+        if panel === mascotPanel, !draggingMascot { coordinator.settings.settings.mascotOrigin = panel.frame.origin }
     }
 
     // MARK: Windows
@@ -259,16 +395,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func toggleOverlayAction() { toggleOverlay() }
 
     @objc private func showSettings() { presentSettings() }
-    @objc private func showProjects() { presentSettings() }
+    @objc private func showSessions() { presentSettings(section: .sessions) }
+    @objc private func showProjects() { presentSettings(section: .projects) }
 
-    private func presentSettings() {
+    private func presentSettings(section: SettingsSection = .general) {
+        settingsPresented = true
+        overlayPanel.orderOut(nil)
         if settingsWindow == nil {
-            let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            w.title = "Impostazioni di Jarvis"
-            w.contentView = NSHostingView(rootView: SettingsView(coordinator: coordinator))
+            let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+            w.title = "Impostazioni di Orbit"
+            w.titlebarAppearsTransparent = true; w.titleVisibility = .hidden
+            w.appearance = NSAppearance(named: .darkAqua)
+            w.backgroundColor = NSColor(red: 8 / 255, green: 10 / 255, blue: 12 / 255, alpha: 1)
+            w.contentView = NSHostingView(rootView: SettingsView(coordinator: coordinator, section: section))
             w.isReleasedWhenClosed = false
+            w.delegate = self
             w.center()
             settingsWindow = w
+        } else {
+            settingsWindow?.contentView = NSHostingView(rootView: SettingsView(coordinator: coordinator, section: section))
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
@@ -280,6 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if onboardingWindow == nil {
             let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
             w.titlebarAppearsTransparent = true; w.titleVisibility = .hidden
+            w.appearance = NSAppearance(named: .darkAqua)
             w.contentView = NSHostingView(rootView: OnboardingView(coordinator: coordinator) { [weak self] in self?.onboardingWindow?.close() })
             w.isReleasedWhenClosed = false
             w.center()
@@ -291,9 +437,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "Jarvis",
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "Orbit",
                                                      .applicationVersion: "0.1",
-                                                     .credits: NSAttributedString(string: "Avvia Claude Code e Codex con la voce. Tutto in locale.")])
+                                                     .credits: NSAttributedString(string: "Lavora sui tuoi progetti con la voce. Codex, Ollama, LM Studio e Claude Code.")])
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
@@ -301,6 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Debug aid: write PNGs of the pill and overlay into the logs folder.
     private func snapshotPanels() {
         var targets: [(String, NSWindow)] = [("pill", pillPanel), ("overlay", overlayPanel)]
+        if let mascotPanel { targets.append(("mascot", mascotPanel)) }
         if let w = onboardingWindow { targets.append(("onboarding", w)) }
         if let w = settingsWindow { targets.append(("settings", w)) }
         for (name, panel) in targets {
@@ -315,8 +462,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// `jarvis://say?text=...` — feed a transcript without the mic (scripting / testing hook).
-    /// `jarvis://overlay` toggles the overlay.
+    /// `orbit://say?text=...` — feed a transcript without the mic (scripting / testing hook).
+    /// `orbit://overlay` toggles the overlay.
     func application(_ application: NSApplication, open urls: [URL]) {
         guard launched else { pendingURLs += urls; return }
         for url in urls {
@@ -329,7 +476,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 Task { await coordinator.handle(transcript: text) }
             case "overlay": toggleOverlay()
             case "snapshot": snapshotPanels()
-            case "settings": presentSettings()
+            case "mascot3d": Orbit3DPreviewWindow.shared.show()
+            case "settings":
+                let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "section" }?.value
+                presentSettings(section: value.flatMap(SettingsSection.init(rawValue:)) ?? .general)
             case "onboarding": showOnboarding()
             case "permissions":
                 // Debug aid: ask for mic + speech and log what TCC answers.

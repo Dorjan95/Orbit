@@ -6,6 +6,7 @@ import Observation
 /// Central state machine (§2). Owns the services and drives the pill + overlay.
 @MainActor @Observable
 final class Coordinator {
+    let usage: AgentUsageStore
     let settings: SettingsStore
     let registry: ProjectRegistry
     let sessions: SessionStore
@@ -14,11 +15,12 @@ final class Coordinator {
     let voice: VoiceService
     let pill = PillModel()
 
-    private var runners: [String: AgentRunner] = [:]
+    private var runners: [String: any AgentBackend] = [:]
     private var clarifyContext: String?
     private var holdStart: Date?
     private var debounceTask: Task<Void, Never>?
     private var listeningActive = false
+    private var mascotWakeCapture = false
     private var hideTask: Task<Void, Never>?
     private var blip: AVAudioPlayer?
     private var pttID: UInt32?
@@ -59,10 +61,35 @@ final class Coordinator {
         listeningActive = false; holdStart = nil
         debounceTask?.cancel(); debounceTask = nil
         hideTask?.cancel()
+        mascotWakeCapture = false
+        wake.stop()
         clarifyContext = nil
         memory.record(heard: "(ha premuto Esc: scambio annullato)", said: "", action: "cancelled", task: nil)
         pill.visible = false; pill.secondary = ""; pill.transcript = ""; pill.state = .listening
         pillDidChange()
+        refreshWake()
+    }
+
+    /// Click to listen; another click submits. WakeService also submits after silence.
+    func toggleMascotListening() {
+        guard !listeningActive else { return }
+        if wake.capturing { wake.finishFromMascot(); return }
+        guard SpeechService.micStatus == .authorized, SpeechService.speechStatus == .authorized else {
+            showError("Consenti microfono e riconoscimento vocale nelle Impostazioni di Sistema, poi clicca Orbit.")
+            if SpeechService.micStatus == .notDetermined || SpeechService.speechStatus == .notDetermined {
+                Task { _ = await SpeechService.requestPermissions() }
+            }
+            return
+        }
+        turnGeneration += 1
+        mascotWakeCapture = true
+        hideTask?.cancel()
+        refreshWake()
+        if !wake.captureFromMascot() {
+            mascotWakeCapture = false
+            showError("Il microfono non è disponibile. Controlla i permessi e riprova.")
+            refreshWake()
+        }
     }
     /// "Pulisci" in the sessions panel: the finished sessions go and so does the conversation, so the next request
     /// starts fresh instead of leaning on mails read "un attimo fa" (29/09). Saved memories stay.
@@ -79,15 +106,21 @@ final class Coordinator {
     var claudePath: String? { CLILocator.find("claude", override: settings.settings.claudePathOverride) }
     var codexPath: String? { CLILocator.find("codex", override: settings.settings.codexPathOverride) }
 
-    init() {
+    func executable(for agent: AgentKind) -> String? {
+        switch agent { case .claude: claudePath; case .codex: codexPath; case .retiredDeepSeek: nil }
+    }
+
+    init(enableServices: Bool = true, sessionRoot: URL = AppPaths.root) {
+        usage = AgentUsageStore(enabled: enableServices)
         Secrets.migrate()
         settings = SettingsStore()
         registry = ProjectRegistry()
-        sessions = SessionStore()
+        sessions = SessionStore(root: sessionRoot)
         memory = MemoryStore()
         speech = SpeechService()
         voice = VoiceService(settings: settings)
         voice.onFinished = { [weak self] in self?.didFinishSpeaking() }
+        guard enableServices else { return }
         setUpWake()
         blip = try? AVAudioPlayer(data: Self.blipWAV()); blip?.volume = 0.35; blip?.prepareToPlay()
         registerHotkeys()
@@ -101,12 +134,13 @@ final class Coordinator {
         }
     }
 
-    // MARK: Hands-free ("Jarvis")
+    // MARK: Hands-free ("Hey Orbit")
 
     private func setUpWake() {
         wake.echoText = { [weak self] in self?.voice.echoText ?? "" }
         wake.onWake = { [weak self] trigger in
             guard let self else { return }
+            pill.automaticCapture = true
             AppLog.write("wake: \(trigger.rawValue)")
             // Talked over: pause, not stop, so a false alarm can resume where it was.
             if voice.isSpeaking { if trigger == .bargeIn { voice.pause(); pausedTranscript = pill.transcript } else { voice.stop() } }
@@ -121,11 +155,14 @@ final class Coordinator {
         }
         wake.onNothingHeard = { [weak self] trigger in
             guard let self else { return }
+            mascotWakeCapture = false
             if trigger == .bargeIn, voice.isPaused { resumeAfterFalseAlarm(); return }
             dismissPill(after: 0.3)
+            refreshWake()
         }
         wake.onCommand = { [weak self] raw, trigger in
             guard let self else { return }
+            mascotWakeCapture = false
             if trigger == .bargeIn, voice.isPaused {
                 guard WakeService.isRealInterruption(raw) else { AppLog.write("wake: false alarm \"\(raw)\", resuming"); resumeAfterFalseAlarm(); return }
                 voice.stop()
@@ -133,6 +170,7 @@ final class Coordinator {
             let text = Self.normalizeTranscript(raw)
             pill.state = .thinking; pill.transcript = text; pillDidChange()
             wake.setMode(.busy)
+            refreshWake()
             Task { await self.handle(transcript: text); self.refreshWake() }
         }
         refreshWake()
@@ -146,12 +184,12 @@ final class Coordinator {
     }
 
     /// Idempotent: runs every tick and after every state change. Off during push-to-talk (own audio engine),
-    /// busy while Jarvis thinks; while it talks, the user's words over it pause it.
+    /// busy while Orbit thinks; while it talks, the user's words over it pause it.
     func refreshWake() {
         let s = settings.settings
-        let want = s.handsFree && !listeningActive
+        let want = (s.handsFree || mascotWakeCapture) && !listeningActive
         // Hands-free needs mic + speech up front: ask at once instead of waiting for a push-to-talk press
-        // (after the signing certificate changed on 29/09 macOS treated Jarvis as a new app and it just sat waiting).
+        // (after the signing certificate changed on 29/09 macOS treated Orbit as a new app and it just sat waiting).
         if want, !askedWakePermissions, SpeechService.micStatus == .notDetermined || SpeechService.speechStatus == .notDetermined {
             askedWakePermissions = true
             Task { let r = await SpeechService.requestPermissions(); AppLog.write("wake permissions: mic=\(r.mic) speech=\(r.speech)"); self.refreshWake() }
@@ -245,6 +283,8 @@ final class Coordinator {
 
     private func beginListening() {
         listeningActive = true
+        pill.automaticCapture = false
+        mascotWakeCapture = false
         wake.stop()
         hideTask?.cancel()
         if settings.settings.blipOnChordDown { blip?.currentTime = 0; blip?.play() }
@@ -294,20 +334,27 @@ final class Coordinator {
 
     private var orchestratorTurn: Task<Void, Never>?
 
+    var orchestrator: Orchestrator? {
+        let agent = settings.settings.orchestratorAgent
+        guard AgentKind.interpreterCases.contains(agent), let path = executable(for: agent) else { return nil }
+        return Orchestrator(agent: agent, executable: path, defaultAgent: settings.settings.defaultAgent,
+                            codexModel: settings.settings.codexOrchestratorModel, codexBackend: settings.settings.assistantBackend, language: settings.settings.replyLanguage)
+    }
+
     func handle(transcript: String) async {
-        guard let claudePath else { showError("Non trovo la CLI di Claude Code"); return }
+        guard orchestrator != nil else { showError("Non trovo la CLI di \(settings.settings.orchestratorAgent.displayName)"); return }
         // One orchestrator turn at a time — concurrent `claude -p` instances slow each other down.
         let previous = orchestratorTurn
-        let turn = Task { @MainActor in await previous?.value; await self.handleSerialized(transcript: transcript, claudePath: claudePath) }
+        let turn = Task { @MainActor in await previous?.value; await self.handleSerialized(transcript: transcript) }
         orchestratorTurn = turn
         await turn.value
     }
 
-    private func handleSerialized(transcript: String, claudePath: String) async {
+    private func handleSerialized(transcript: String) async {
         let gen = turnGeneration
-        let orch = Orchestrator(claudePath: claudePath, language: settings.settings.replyLanguage)
+        guard let orch = orchestrator else { showError("L'agente vocale non è disponibile"); return }
         let action = await orch.decide(transcript: transcript, projects: registry.promptSummary, sessions: sessions.promptSummary,
-                                       maxSessions: settings.settings.maxConcurrentSessions, runningCount: sessions.running.count,
+                                       maxSessions: settings.settings.maxConcurrentSessions, runningCount: runners.count,
                                        context: clarifyContext, memories: memory.promptSummary, history: memory.turnsSummary)
         guard gen == turnGeneration else { AppLog.write("turn dropped (escaped): \"\(transcript)\""); return }
         let priorContext = clarifyContext
@@ -362,8 +409,25 @@ final class Coordinator {
         if let r = a.remember, !r.isEmpty { memory.remember(r) }
         var speak = a.speak
         switch a.action {
+        case .steer:
+            if let session = resolveSession(a.sessionID, project: a.project), let task = a.task {
+                speak = steer(sessionID: session.id, task: task) ? "Interrompo il turno e riprendo con la nuova direzione." : "Non posso reindirizzare questa sessione adesso."
+            } else { speak = "Non trovo la sessione da reindirizzare." }
+        case .workflow:
+            var definition = settings.settings.workflowDefinition
+            guard let project = registry.resolve(a.project) ?? (a.project == nil ? generalProject() : nil), let task = a.task else {
+                speak = "Scegli il progetto o l’area Generale in Sessioni, Nuovo workflow."; break
+            }
+            let command = project.verificationCommand ?? ""
+            if definition.usesVerification && command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                speak = "Configura il comando di verifica in Sessioni, Nuovo workflow."; break
+            }
+            if let agent = a.agent, let index = definition.nodes.firstIndex(where: { $0.kind == .implementation || $0.kind == .action }) { definition.nodes[index].agent = agent }
+            if !startWorkflow(project: project, agent: a.agent ?? project.defaultAgent, reviewer: .codex, task: task, verificationCommand: command, definition: definition) {
+                speak = "Non sono riuscito ad avviare il workflow. Controlla le CLI e l’area di lavoro."
+            } else { speak = definition.hasPlan ? "Avvio il piano del workflow. Ti chiederò di approvarlo, se previsto." : "Avvio il workflow configurato." }
         case .spawn:
-            guard sessions.running.count < settings.settings.maxConcurrentSessions else { speak = "Ho già \(sessions.running.count) sessioni in corso. Aspettiamo che una finisca."; break }
+            guard runners.count < settings.settings.maxConcurrentSessions else { speak = "Ho già \(runners.count) sessioni in corso. Aspettiamo che una finisca."; break }
             var resolved = registry.resolve(a.project) ?? (a.project == nil ? generalProject() : nil)
             // Unknown project name + a concrete task: create it on the spot rather than asking.
             if resolved == nil, let name = a.project, let task = a.task, !task.isEmpty, let made = try? createProject(named: name) {
@@ -382,7 +446,7 @@ final class Coordinator {
         case .followup:
             guard let task = a.task, !task.isEmpty else { speak = "Cosa deve fare?"; clarifyContext = transcript; pill.state = .clarify; break }
             if let s = resolveSession(a.sessionID, project: a.project) {
-                followUp(session: s, task: task, coding: a.coding)
+                if !followUp(session: s, task: task, coding: a.coding) { speak = lastFollowupFailure ?? "Non riesco a continuare questa sessione." }
             } else if let project = registry.resolve(a.project) {
                 // No session for that project yet — a follow-up is just a spawn.
                 if spawn(project: project, agent: a.agent ?? project.defaultAgent, task: task, coding: a.coding) == false { speak = spawnFailureSpeech(project, project.defaultAgent) }
@@ -436,18 +500,19 @@ final class Coordinator {
         var isDir: ObjCBool = false
         if !chosen.isEmpty, FileManager.default.fileExists(atPath: chosen, isDirectory: &isDir), isDir.boolValue {
             if let p = registry.projects.first(where: { ($0.path as NSString).expandingTildeInPath == chosen }) { return p }
-            return Project(name: URL(fileURLWithPath: chosen).lastPathComponent, path: chosen, defaultAgent: .claude, permissionMode: settings.settings.claudePermissionMode)
+            return Project(name: URL(fileURLWithPath: chosen).lastPathComponent, path: chosen, defaultAgent: settings.settings.defaultAgent, permissionMode: settings.settings.defaultPermissionMode)
         }
         let root = URL(fileURLWithPath: (settings.settings.projectsRoot as NSString).expandingTildeInPath, isDirectory: true)
         let dir = root.appendingPathComponent("general", isDirectory: true)
         guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else { return nil }
-        return Project(name: "Generale", path: dir.path, aliases: ["generale", "general"], defaultAgent: .claude, permissionMode: settings.settings.claudePermissionMode)
+        return Project(name: "Generale", path: dir.path, aliases: ["generale", "general"], defaultAgent: settings.settings.defaultAgent, permissionMode: settings.settings.defaultPermissionMode)
     }
 
     private func spawnFailureSpeech(_ p: Project, _ agent: AgentKind) -> String {
         switch lastSpawnFailure {
         case .missingCLI: "La CLI di \(agent.displayName) non è installata."
         case .missingFolder: "La cartella di \(p.name) non esiste: correggi il percorso nelle Impostazioni."
+        case .configuration(let message): message
         case .launch: "Non riesco ad avviare \(agent.displayName), guarda il log."
         case nil: "Non sono riuscito a farlo partire."
         }
@@ -465,125 +530,519 @@ final class Coordinator {
         if r.isEmpty { return "Al momento non c'è niente in corso." }
         return r.map { s in
             let doing = ProgressSpeech.phrase(forActivity: s.activity).map { ", \($0)" } ?? ""
+            if let workflow = s.workflow, let stage = s.turns?.first(where: { $0.id == s.currentTurnID })?.workflowStage {
+                return "\(s.projectName): \(stage.label.lowercased()) in corso\(doing), workflow \(workflow.state.rawValue)"
+            }
             return "\(s.projectName): sono a \(SessionStore.spoken(s.elapsed))\(doing)"
         }.joined(separator: "; ") + "."
     }
 
     // MARK: Sessions
 
-    enum SpawnFailure { case missingCLI, missingFolder, launch(String) }
+    enum SpawnFailure { case missingCLI, missingFolder, configuration(String), launch(String) }
     private(set) var lastSpawnFailure: SpawnFailure?
 
+    /// Accept the full plan before starting either model. Review uses a fresh context.
     @discardableResult
-    func spawn(project: Project, agent: AgentKind, task: String, resume: String? = nil, existingID: String? = nil, coding: Bool? = nil) -> Bool {
+    func startWorkflow(project: Project, agent: AgentKind, reviewer: AgentKind, task: String, verificationCommand: String, maxCorrections: Int? = nil, definition: WorkflowDefinition? = nil) -> Bool {
+        guard agent.isAvailable, reviewer.isAvailable else {
+            showError(AgentBackendError.removedAgent.localizedDescription); return false
+        }
+        let command = verificationCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !(definition?.usesVerification ?? true) || !command.isEmpty else {
+            showError("Scrivi la richiesta e il comando di verifica del progetto."); return false
+        }
+        guard runners.count < settings.settings.maxConcurrentSessions else {
+            showError("Attendi che una sessione termini."); return false
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: project.url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            showError("La cartella del progetto non esiste."); return false
+        }
+        if let definition {
+            return startGraphWorkflow(project: project, task: task, command: command, definition: definition)
+        }
+        guard executable(for: agent) != nil, executable(for: reviewer) != nil else {
+            showError("Installa o configura le CLI di implementazione e review."); return false
+        }
+        let implementationConfiguration = workflowConfiguration(project: project, agent: agent, readOnly: false)
+        let reviewConfiguration = workflowConfiguration(project: project, agent: reviewer, readOnly: true)
+        if let error = implementationConfiguration.codex?.configurationError ?? reviewConfiguration.codex?.configurationError {
+            showError(error); return false
+        }
+        let implementation = SessionTurn(task: task, configuration: implementationConfiguration,
+            guidance: memory.agentGuidance, workflowStage: .implementation)
+        var review = SessionTurn(task: "Review", configuration: reviewConfiguration,
+            guidance: "This is an independent read-only review. Do not open results or use connected services. The structured review report takes precedence over conversational final-answer instructions.", workflowStage: .review)
+        review.task = AgentWorkflow.reviewTask(task: task, implementation: "", token: review.id)
+        let verification = SessionTurn(task: command, configuration: implementationConfiguration, workflowStage: .verification)
+        let session = Session(id: sessions.nextID(), projectName: project.name, projectPath: project.path, agent: agent,
+            task: task, executionConfiguration: implementationConfiguration, turns: [implementation, review, verification],
+            workflow: AgentWorkflow(originalTask: task, verificationCommand: command,
+                maxCorrections: agent == .codex ? min(3, max(0, maxCorrections ?? 2)) : 0, correctionsScheduled: 0))
+        do { try sessions.save(session, kind: .accepted, turnID: implementation.id) }
+        catch { showError(error.localizedDescription); return false }
+        return resumePending(sessionID: session.id)
+    }
+
+    func workflowConfiguration(project: Project, agent: AgentKind, readOnly: Bool) -> AgentExecutionConfiguration {
+        AgentExecutionConfiguration(agent: agent,
+            permissionMode: agent == project.defaultAgent ? project.permissionMode : settings.settings.permissionMode(for: agent),
+            model: agent == .claude ? settings.settings.codingModel : agent == .codex ? settings.settings.codexModel : nil,
+            codex: agent == .codex ? settings.settings.workerBackend : nil,
+            readOnly: readOnly,
+            interactiveControls: !readOnly && settings.settings.interactiveControls(for: agent))
+    }
+
+    @discardableResult
+    func steer(sessionID: String, task: String) -> Bool {
+        let direction = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !direction.isEmpty, var session = sessions.session(sessionID), session.offersSteering,
+              let source = session.currentTurnID, let runner = runners[sessionID], runner.canSteer,
+              let active = session.turns?.first(where: { $0.id == source }) else {
+            showError("Reindirizzamento disponibile nelle sessioni con controlli interattivi, durante l'implementazione. Attendi l'avvio del turno."); return false
+        }
+        var replacement = SessionTurn(task: "Continue the interrupted task: \(session.workflow?.originalTask ?? active.task)\nNew direction from the user: \(direction)",
+            configuration: active.configuration, guidance: active.guidance, workflowStage: active.workflowStage)
+        replacement.workflowNodeID = active.workflowNodeID
+        replacement.workflowAttempt = active.workflowAttempt
+        replacement.repairSourceTurnID = active.repairSourceTurnID
+        replacement.createdAt = Date()
+        let insertion = session.turns!.firstIndex(where: { $0.id == source })! + 1
+        session.turns!.insert(replacement, at: insertion)
+        session.steering = SessionSteering(sourceTurnID: source, replacementTurnID: replacement.id)
+        if let index = session.turns?.firstIndex(where: { $0.id == source }) { session.turns?[index].cancellationRequestedAt = Date() }
+        session.workflow?.originalTask += "\nNuova direzione: " + direction
+        session.activity = "Interrompe il turno per cambiare direzione…"
+        session.approvals = session.approvals?.map {
+            var value = $0
+            if value.state == .pending { value.state = .expired; value.decidedAt = Date() }
+            return value
+        }
+        session.status = .running
+        do {
+            try sessions.save(session, kind: .steeringRequested, turnID: source)
+            try runner.interruptForSteering()
+            return true
+        } catch {
+            // The accepted replacement is retained; uncertain delivery never causes automatic replay.
+            runner.cancel(); showError(error.localizedDescription); return false
+        }
+    }
+
+    @discardableResult
+    func spawn(project: Project, agent: AgentKind, task: String, resume: String? = nil, existingID: String? = nil, coding: Bool? = nil, queuedTurnID: UUID? = nil) -> Bool {
         lastSpawnFailure = nil
-        guard let exe = agent == .claude ? claudePath : codexPath else { lastSpawnFailure = .missingCLI; return false }
+        guard agent.isAvailable, existingID.flatMap({ sessions.session($0) })?.usesRetiredAgent != true else {
+            lastSpawnFailure = .configuration(AgentBackendError.removedAgent.localizedDescription); return false
+        }
+        guard runners.count < settings.settings.maxConcurrentSessions,
+              existingID.map({ runners[$0] == nil }) ?? true else {
+            lastSpawnFailure = .configuration("Attendi che la sessione in corso termini."); return false
+        }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: project.url.path, isDirectory: &isDir), isDir.boolValue else {
             lastSpawnFailure = .missingFolder
             AppLog.write("spawn refused: folder missing \(project.url.path)")
             return false
         }
-        let id = existingID ?? sessions.nextID()
-        if existingID == nil {
-            sessions.insert(Session(id: id, projectName: project.name, projectPath: project.path, agent: agent, task: task))
-        } else {
-            sessions.update(id) { $0.status = .running; $0.task = task; $0.finishedAt = nil; $0.activity = ""; $0.startedAt = Date(); $0.dismissed = false }
+        let previous = existingID.flatMap { sessions.session($0) }
+        let queued = previous?.queuedTurns.first(where: { $0.id == queuedTurnID })
+        if queuedTurnID != nil && queued == nil { return false }
+        if let previous, previous.workflow != nil {
+            guard let queued, previous.canResumeQueue, previous.queuedTurns.first?.id == queued.id else {
+                lastSpawnFailure = .configuration("La fase precedente del workflow non è stata superata."); return false
+            }
         }
-        let runner = AgentRunner(sessionID: id, agent: agent,
-            onEvent: { [weak self] e in self?.handleEvent(e, for: id) },
-            onExit: { [weak self] code, text in self?.handleExit(code: code, lastText: text, for: id) })
-        let mode = project.permissionMode
-        // Coding work on Opus 5.5 (29/09); a follow-up keeps the model its session started with.
-        if let coding { codingSessions[id] = coding }
-        let model = (agent == .claude && codingSessions[id] == true) ? settings.settings.codingModel : nil
-        AppLog.write("spawn \(id) on \(project.name) model=\(model ?? "default")")
+        let exe: String
+        if queued?.workflowStage == .verification || queued?.workflowStage == .command { exe = "/bin/zsh" }
+        else if let path = executable(for: agent) { exe = path }
+        else { lastSpawnFailure = .missingCLI; return false }
+        let backend: CodexBackend? = agent == .codex
+            ? (existingID == nil ? settings.settings.workerBackend : (sessions.session(existingID!)?.codexBackend ?? CodexBackend())) : nil
+        if let message = (queued?.configuration.codex ?? backend)?.configurationError { lastSpawnFailure = .configuration(message); return false }
+        let id = existingID ?? sessions.nextID()
+        let mode = agent == project.defaultAgent ? project.permissionMode :
+            settings.settings.permissionMode(for: agent)
+        let model = agent == .codex ? settings.settings.codexModel :
+            (agent == .claude && coding == true ? settings.settings.codingModel : nil)
+        let configuration = queued?.configuration ?? previous?.executionConfiguration ??
+            AgentExecutionConfiguration(agent: agent, permissionMode: mode, model: model, codex: backend,
+                                        interactiveControls: settings.settings.interactiveControls(for: agent))
+        var session = previous ?? Session(id: id, projectName: project.name, projectPath: project.path, agent: agent, task: task, codexBackend: backend)
+        var turn = queued ?? SessionTurn(task: task, configuration: configuration, guidance: memory.agentGuidance)
+        let turnID = turn.id
+        let onEvent: @MainActor (AgentEvent) -> Void = { [weak self] e in self?.handleEvent(e, for: id, turnID: turnID) }
+        let onExit: @MainActor (Int32, String) -> Void = { [weak self] code, text in self?.handleExit(code: code, lastText: text, for: id, turnID: turnID) }
+        let runner: any AgentBackend
+        if turn.workflowStage == .verification || turn.workflowStage == .command {
+            runner = VerificationBackend(sessionID: id, onEvent: onEvent, onExit: onExit)
+        } else if configuration.supportsInteractiveControls {
+            runner = NativeAgentBackend(sessionID: id, agent: agent, onEvent: onEvent, onExit: onExit)
+        } else { runner = AgentRunner(sessionID: id, agent: agent, onEvent: onEvent, onExit: onExit) }
         do {
-            try runner.start(executable: exe, task: task, cwd: project.url.path, mode: mode, resume: resume, extraGuidance: memory.agentGuidance, model: model)
+            session.agent = configuration.agent
+            session.executionConfiguration = configuration
+            session.codexBackend = configuration.codex
+            if queued == nil {
+                session.turns = (session.turns ?? []) + [turn]
+                try sessions.save(session, kind: .accepted, turnID: turnID)
+            }
+            // Persist the uncertain boundary before any external side effect.
+            turn.state = .dispatched; turn.dispatchedAt = Date()
+            session.turns = (session.turns ?? []).map { $0.id == turnID ? turn : $0 }
+            session.currentTurnID = turnID
+            session.workflow?.state = .dispatched
+            if session.steering?.replacementTurnID == turnID { session.steering = nil }
+            if turn.workflowStage == .planning || turn.workflowStage == .review || turn.workflowStage == .verification || turn.workflowStage == .command ||
+                (turn.repairSourceTurnID != nil && resume == nil) { session.agentSessionID = nil }
+            session.status = .running; session.task = turn.task; session.finishedAt = nil
+            session.activity = ""; session.resultText = ""; session.startedAt = Date(); session.dismissed = false
+            try sessions.save(session, kind: .dispatched, turnID: turnID)
+            AppLog.write("spawn \(id) turn=\(turnID) provider=\(configuration.codex?.label ?? agent.displayName)")
+            try runner.start(AgentRunRequest(executable: exe, task: turn.task, cwd: project.url.path, resume: resume,
+                                             guidance: turn.guidance, configuration: configuration))
             runners[id] = runner
-            sessions.update(id) { $0.pid = runner.pid }
+            session.pid = runner.pid
+            try sessions.save(session, kind: .processStarted, turnID: turnID)
             return true
         } catch {
+            runner.close()
             lastSpawnFailure = .launch("\(error)")
-            sessions.update(id) { $0.status = .failed; $0.finishedAt = Date(); $0.activity = "Avvio non riuscito: \(error)" }
+            sessions.update(id, event: .finished) {
+                $0.workflow?.state = .failed; $0.workflow?.detail = "Avvio non riuscito: \(error)"
+                $0.status = .failed; $0.finishedAt = Date(); $0.activity = "Avvio non riuscito: \(error)"
+                if let index = $0.turns?.firstIndex(where: { $0.id == turnID }) {
+                    $0.turns?[index].state = .failed; $0.turns?[index].finishedAt = Date()
+                }
+                if runners[id] == nil { $0.currentTurnID = nil; $0.pid = nil }
+            }
             return false
         }
     }
 
-    func followUp(session s: Session, task: String, coding: Bool? = nil) {
-        if coding == true { codingSessions[s.id] = true }
-        guard let project = registry.projects.first(where: { $0.name == s.projectName }) ?? registry.resolve(s.projectName) else { return }
-        if s.status == .running {
-            // A running headless session cannot take stdin; queue as a resume after it finishes.
-            pendingFollowups[s.id, default: []].append(task)
-            sessions.update(s.id) { $0.activity = "Seguito in coda" }
-        } else {
-            spawn(project: project, agent: s.agent, task: task, resume: s.agentSessionID, existingID: s.id)
+    private(set) var lastFollowupFailure: String?
+
+    @discardableResult
+    func followUp(session s: Session, task: String, coding: Bool? = nil) -> Bool {
+        lastFollowupFailure = nil
+        guard var current = sessions.session(s.id), !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard !current.usesRetiredAgent else {
+            lastFollowupFailure = AgentBackendError.removedAgent.localizedDescription
+            showError(lastFollowupFailure!); return false
         }
+        if current.workflow != nil {
+            lastFollowupFailure = "Usa Reindirizza durante l'implementazione interattiva oppure avvia un nuovo workflow.";
+            showError(lastFollowupFailure!); return false
+        }
+        let project = registry.projects.first(where: { $0.name == s.projectName }) ?? registry.resolve(s.projectName)
+            ?? Project(name: s.projectName, path: s.projectPath, defaultAgent: s.agent,
+                       permissionMode: settings.settings.permissionMode(for: s.agent))
+        // Running or stopping processes retain ownership until their exit callback.
+        if current.status == .cancelled && runners[s.id] != nil {
+            lastFollowupFailure = "La sessione si sta fermando. Attendi prima di continuare."
+            showError(lastFollowupFailure!); return false
+        }
+        let mode = s.agent == project.defaultAgent ? project.permissionMode :
+            settings.settings.permissionMode(for: s.agent)
+        let configuration = current.executionConfiguration ?? AgentExecutionConfiguration(agent: s.agent, permissionMode: mode,
+            model: s.agent == .claude && coding == true ? settings.settings.codingModel : nil,
+            codex: s.agent == .codex ? (current.codexBackend ?? CodexBackend()) : nil)
+        let turn = SessionTurn(task: task, configuration: configuration, guidance: memory.agentGuidance)
+        current.executionConfiguration = configuration
+        current.turns = (current.turns ?? []) + [turn]
+        current.dismissed = false
+        if runners[s.id] != nil { current.activity = "Seguito in coda" }
+        do { try sessions.save(current, kind: .accepted, turnID: turn.id) }
+        catch { lastFollowupFailure = error.localizedDescription; showError(error.localizedDescription); return false }
+        if runners[s.id] == nil { return resumePending(sessionID: s.id) }
+        return true
     }
-    private var pendingFollowups: [String: [String]] = [:]
-    private var codingSessions: [String: Bool] = [:]
+
+    @discardableResult
+    func resumePending(sessionID: String) -> Bool {
+        guard runners[sessionID] == nil, let session = sessions.session(sessionID), session.canResumeQueue, let next = session.queuedTurns.first else { return false }
+        let project = Project(name: session.projectName, path: session.projectPath, defaultAgent: session.agent,
+                              permissionMode: next.configuration.permissionMode)
+        let freshContext = session.workflow?.definition != nil && session.steering?.replacementTurnID != next.id || next.workflowStage == .planning || next.workflowStage == .review || next.workflowStage == .verification || next.workflowStage == .command ||
+            ((next.workflowAttempt ?? 0) > 0 && session.steering?.replacementTurnID != next.id)
+        if !spawn(project: project, agent: next.configuration.agent, task: next.task, resume: freshContext ? nil : session.agentSessionID,
+                  existingID: sessionID, queuedTurnID: next.id) {
+            lastFollowupFailure = spawnFailureSpeech(project, session.agent)
+            if sessions.session(sessionID)?.queuedTurns.contains(where: { $0.id == next.id }) == true {
+                lastFollowupFailure! += " Il seguito resta in coda."
+            }
+            showError(lastFollowupFailure!)
+            return false
+        }
+        return true
+    }
 
     func stop(sessionID: String) {
-        guard let r = runners[sessionID] else { return }
-        sessions.update(sessionID) { $0.status = .cancelled; $0.activity = "Mi sto fermando…" }
-        r.stop()
+        guard var session = sessions.session(sessionID) else { return }
+        session.steering = nil; session.workflow?.awaitingPlanApproval = false; session.workflow?.state = .cancelled; session.workflow?.detail = "Workflow annullato"
+        session.status = .cancelled; session.activity = runners[sessionID] == nil ? "" : "Mi sto fermando…"
+        session.approvals = session.approvals?.map {
+            var approval = $0
+            if approval.state == .pending { approval.state = .cancelled; approval.decidedAt = Date() }
+            return approval
+        }
+        if var turns = session.turns {
+            for index in turns.indices where turns[index].state == .queued || turns[index].state == .dispatched {
+                turns[index].cancellationRequestedAt = Date()
+                if turns[index].state == .queued {
+                    turns[index].state = .cancelled; turns[index].finishedAt = Date()
+                }
+            }
+            session.turns = turns
+        }
+        if runners[sessionID] == nil { session.finishedAt = Date() }
+        do { try sessions.save(session, kind: .cancelled, turnID: session.currentTurnID) }
+        catch {
+            // Cancellation must still stop the process when storage fails.
+            sessions.update(sessionID) { $0 = session }
+            showError(error.localizedDescription)
+        }
+        runners[sessionID]?.cancel()
     }
 
-    func stopAll() {
-        for (_, r) in runners { r.kill() }
-        for s in sessions.running { sessions.update(s.id) { $0.status = .cancelled; $0.finishedAt = Date() } }
+    /// The session, turn and current runtime must still own this exact request.
+    /// Record the user's choice before delivering a one-shot grant to the peer.
+    @discardableResult
+    func resolveApproval(sessionID: String, approvalID: UUID, optionID: String) -> Bool {
+        guard var session = sessions.session(sessionID), session.status == .needsInput,
+              let turnID = session.currentTurnID, let runner = runners[sessionID], runner.isRunning,
+              let index = session.approvals?.firstIndex(where: { $0.id == approvalID && $0.state == .pending && $0.turnID == turnID }),
+              session.approvals?[index].options.contains(where: { $0.optionID == optionID && $0.isTransient }) == true else { return false }
+        session.approvals?[index].state = .decided
+        session.approvals?[index].selectedOptionID = optionID
+        session.approvals?[index].decidedAt = Date()
+        if session.pendingApprovals.isEmpty { session.status = .running; session.activity = "Riprende dopo la tua risposta" }
+        do {
+            try sessions.save(session, kind: .approvalDecided, turnID: turnID)
+            try runner.resolveApproval(approvalID, optionID: optionID)
+            return true
+        } catch {
+            // A failed delivery is uncertain; never retry the authorization.
+            runner.cancel()
+            showError(error.localizedDescription)
+            return false
+        }
     }
 
-    private func handleEvent(_ e: AgentEvent, for id: String) {
+    func stopAll(includePendingPlans: Bool = true) {
+        for session in sessions.sessions where runners[session.id] != nil || !session.queuedTurns.isEmpty || (includePendingPlans && session.workflow?.awaitingPlanApproval == true) { stop(sessionID: session.id) }
+        for (_, runner) in runners { runner.close() }
+    }
+
+    private func handleEvent(_ e: AgentEvent, for id: String, turnID: UUID) {
+        guard let session = sessions.session(id), session.currentTurnID == turnID, session.status != .cancelled else { return }
         switch e {
-        case .sessionID(let sid): sessions.update(id) { $0.agentSessionID = sid }
+        case .approvalRequested(var approval):
+            guard runners[id]?.capabilities.interactiveApprovals == true else { return }
+            approval.turnID = turnID
+            var updated = session
+            updated.approvals = (updated.approvals ?? []) + [approval]
+            updated.status = .needsInput; updated.activity = "In attesa di un permesso"
+            do { try sessions.save(updated, kind: .approvalRequested, turnID: turnID) }
+            catch { runners[id]?.cancel(); showError(error.localizedDescription) }
+        case .approvalExpired(let approvalID):
+            sessions.update(id, event: .approvalExpired) {
+                if let index = $0.approvals?.firstIndex(where: { $0.id == approvalID && $0.state == .pending }) {
+                    $0.approvals?[index].state = .expired; $0.approvals?[index].decidedAt = Date()
+                }
+                if $0.pendingApprovals.isEmpty && $0.status == .needsInput { $0.status = .running }
+            }
+        case .sessionID(let sid): sessions.update(id, event: .backendIdentified) { $0.agentSessionID = sid }
         case .activity(let a): sessions.update(id) { if $0.status == .running { $0.activity = a } }
         case .text(let t):
             sessions.update(id) { $0.resultText = String(t.suffix(4000)) }
             if let n = ProgressSpeech.narration(from: t) { progress[id, default: Progress()].narration = n; progress[id]?.narrationAt = Date() }
-        case .needsInput: sessions.update(id) { $0.status = .needsInput }
+        case .needsInput: sessions.update(id, event: .blocked) { $0.status = .needsInput }
+        case .streamComplete: break
+        case .turnEnded(let outcome):
+            sessions.update(id, event: .result) {
+                if let index = $0.turns?.firstIndex(where: { $0.id == turnID }) { $0.turns?[index].backendOutcome = outcome }
+                switch outcome {
+                case .completed: break // Wait for stream flush and process exit.
+                case .blocked:
+                    $0.status = .needsInput
+                    $0.activity = "\($0.agent.displayName) ha bloccato il turno"
+                case .failed, .interrupted: $0.status = .failed
+                case .cancelled: $0.status = .cancelled
+                }
+            }
         case .result(let t, let err):
-            sessions.update(id) {
+            sessions.update(id, event: .result) {
                 if !t.isEmpty { $0.resultText = String(t.suffix(4000)) }
-                if err && $0.status == .running { $0.status = .failed }
+                if err && $0.status != .needsInput {
+                    $0.status = .failed
+                }
             }
         }
     }
 
-    private func handleExit(code: Int32, lastText: String, for id: String) {
+    private func handleExit(code: Int32, lastText: String, for id: String, turnID: UUID) {
+        guard var s = sessions.session(id), s.currentTurnID == turnID else { return }
         AppLog.write("session \(id) exited \(code)")
+        let steeringSettled = runners[id]?.steeringSettled == true && code == 0
         runners.removeValue(forKey: id)
         progress[id] = nil
-        guard var s = sessions.session(id) else { return }
         let wasCancelled = s.status == .cancelled
-        sessions.update(id) {
-            $0.finishedAt = Date(); $0.pid = nil
-            if $0.status == .running { $0.status = code == 0 ? .done : .failed }
-            if $0.status == .cancelled { $0.activity = "" }
-            if $0.status == .failed && code != 0 && $0.activity.isEmpty { $0.activity = "Uscita \(code)" }
+        s.approvals = s.approvals?.map {
+            var approval = $0
+            if approval.state == .pending { approval.state = .expired; approval.decidedAt = Date() }
+            return approval
         }
-        s = sessions.session(id)!
-        if let next = pendingFollowups[id]?.first {
-            pendingFollowups[id]?.removeFirst()
-            if pendingFollowups[id]?.isEmpty == true { pendingFollowups[id] = nil }
-            followUp(session: s, task: next)
+        s.finishedAt = Date(); s.pid = nil; s.currentTurnID = nil
+        if s.status == .running { s.status = code == 0 ? .done : .failed }
+        if s.status == .needsInput && s.executionConfiguration?.supportsInteractiveControls == true { s.status = .failed }
+        if s.status == .cancelled { s.activity = "" }
+        if s.status == .failed && code != 0 && s.activity.isEmpty { s.activity = "Uscita \(code)" }
+        if s.resultText.isEmpty { s.resultText = String(lastText.suffix(4000)) }
+        if let index = s.turns?.firstIndex(where: { $0.id == turnID }) {
+            let interrupted = s.turns?[index].backendOutcome == .interrupted
+            s.turns?[index].state = interrupted ? .interrupted :
+                s.status == .done ? .completed : s.status == .cancelled ? .cancelled : s.status == .needsInput ? .blocked : .failed
+            s.turns?[index].finishedAt = Date(); s.turns?[index].exitCode = code
+            s.turns?[index].resultText = String((lastText.isEmpty ? s.resultText : lastText).suffix(64000))
+        }
+        let steering = s.steering?.sourceTurnID == turnID
+        if steering {
+            s.workflow?.state = steeringSettled ? .dispatched : .interrupted
+            s.status = .failed
+            s.activity = steeringSettled ? "Riprende con la nuova direzione" : "Interruzione non confermata: controlla il lavoro e riprendi la coda."
+            s.workflow?.detail = s.activity
+        } else if s.workflow != nil {
+            advanceWorkflow(&s, turnID: turnID, code: code)
+        }
+        do { try sessions.save(s, kind: .finished, turnID: turnID) }
+        catch {
+            s.status = .failed
+            s.workflow?.state = .blocked
+            s.workflow?.detail = "Salvataggio non riuscito. Nessuna nuova fase avviata: \(error.localizedDescription)"
+            sessions.update(id) { $0 = s }; showError(error.localizedDescription); return
+        }
+        if steering {
+            if steeringSettled { resumePending(sessionID: id) }
+            return
+        }
+        if s.workflow != nil && s.canResumeQueue {
+            resumePending(sessionID: id)
+            return
+        }
+        if s.workflow == nil && s.status == .done && !s.queuedTurns.isEmpty {
+            resumePending(sessionID: id)
             return
         }
         var opened: String?
         if !wasCancelled, s.status == .done, settings.settings.openResults,
            let log = try? String(contentsOf: AppPaths.log(for: id), encoding: .utf8),
-           let url = SessionResult.viewable(ndjson: log, resultText: s.resultText.isEmpty ? lastText : s.resultText) {
+           let url = SessionResult.viewable(ndjson: log, resultText: s.resultText.isEmpty ? lastText : s.resultText, projectPath: s.projectPath) {
             AppLog.write("open result \(id): \(url.absoluteString)")
             NSWorkspace.shared.open(url)
             opened = url.isFileURL ? url.lastPathComponent : url.absoluteString
         }
-        guard !wasCancelled, settings.settings.speakSummaries, let claudePath else { return }
+        guard !wasCancelled, settings.settings.speakSummaries, let orch = orchestrator else { return }
         let result = s.resultText.isEmpty ? lastText : s.resultText
         Task {
-            let summary = await Orchestrator(claudePath: claudePath, language: settings.settings.replyLanguage).summarize(task: s.task, project: s.projectName, result: result,
+            let summary = await orch.summarize(task: s.task, project: s.projectName, result: result,
                                                                               isError: s.status != .done, exitCode: code, opened: opened)
             announce(summary)
+        }
+    }
+
+    private func advanceWorkflow(_ session: inout Session, turnID: UUID, code: Int32) {
+        if session.workflow?.definition != nil { advanceGraphWorkflow(&session, turnID: turnID, code: code); return }
+        guard let turn = session.turns?.first(where: { $0.id == turnID }), let stage = turn.workflowStage,
+              let workflow = session.workflow, (turn.workflowAttempt ?? 0) == workflow.attempt else { return }
+        guard session.status == .done, code == 0, turn.state == .completed else {
+            // Tool/auth failures, cancellation, signals and timeouts require human attention.
+            let repairable = stage == .verification && (1...125).contains(code) &&
+                turn.backendOutcome == .failed && session.status == .failed && turn.state == .failed
+            if repairable && scheduleCorrection(&session, after: turn) { return }
+            session.workflow?.state = session.status == .cancelled ? .cancelled : turn.state
+            session.workflow?.detail = "\(stage.label) fermata: " + (session.activity.isEmpty ? "controlla il risultato e il log." : session.activity)
+            finishFailedWorkflow(&session, budgetExhausted: repairable)
+            return
+        }
+        switch stage {
+        case .implementation:
+            guard let index = session.turns?.firstIndex(where: {
+                $0.workflowStage == .review && $0.state == .queued && ($0.workflowAttempt ?? 0) == workflow.attempt
+            }), let token = session.turns?[index].id else {
+                session.status = .failed; session.workflow?.state = .failed
+                finishFailedWorkflow(&session, budgetExhausted: false); return
+            }
+            let failure = turn.repairSourceTurnID.flatMap { id in session.turns?.first(where: { $0.id == id }) }
+            session.turns?[index].task = AgentWorkflow.reviewTask(task: workflow.originalTask,
+                implementation: turn.resultText ?? "", token: token, previousFailure: failure.map(AgentWorkflow.failureEvidence) ?? "")
+            session.workflow?.state = .dispatched; session.workflow?.detail = "Implementazione completata"
+        case .review:
+            guard let report = AgentWorkflow.reviewReport(turn.resultText ?? "", token: turnID) else {
+                session.status = .failed; session.workflow?.state = .failed; session.workflow?.reviewPassed = false
+                session.workflow?.detail = "Rapporto di review mancante o non valido. Verifica non eseguita."
+                if let index = session.turns?.firstIndex(where: { $0.id == turnID }) { session.turns?[index].state = .failed }
+                finishFailedWorkflow(&session, budgetExhausted: false); return
+            }
+            session.workflow?.reviewPassed = report.verdict == "passed"
+            session.workflow?.detail = report.summary + (report.findings.isEmpty ? "" : "\n" + report.findings.joined(separator: "\n"))
+            if report.verdict != "passed" {
+                session.status = report.verdict == "blocked" ? .needsInput : .failed
+                session.workflow?.state = report.verdict == "blocked" ? .blocked : .failed
+                if let index = session.turns?.firstIndex(where: { $0.id == turnID }) { session.turns?[index].state = report.verdict == "blocked" ? .blocked : .failed }
+                let repairable = report.verdict == "failed" && report.findings.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                if repairable && scheduleCorrection(&session, after: turn) { return }
+                finishFailedWorkflow(&session, budgetExhausted: repairable)
+            } else { session.workflow?.state = .dispatched }
+        case .planning, .command, .action: return
+        case .verification:
+            session.workflow?.state = .completed; session.workflow?.detail = "Implementazione e review completate; comando di verifica riuscito."
+            session.task = workflow.originalTask
+        }
+    }
+
+    /// Mutates one snapshot; handleExit journals the complete plan before launching anything.
+    private func scheduleCorrection(_ session: inout Session, after failure: SessionTurn) -> Bool {
+        guard var workflow = session.workflow, workflow.attempt < workflow.correctionLimit,
+              let initial = session.turns?.first(where: { $0.workflowStage == .implementation }),
+              initial.configuration.agent == .codex, initial.configuration.readOnly != true,
+              let review = session.turns?.first(where: { $0.workflowStage == .review }),
+              session.turns?.contains(where: { $0.repairSourceTurnID == failure.id }) == false else { return false }
+        let attempt = workflow.attempt + 1
+        var correction = SessionTurn(task: AgentWorkflow.correctionTask(task: workflow.originalTask,
+            evidence: AgentWorkflow.failureEvidence(failure), command: workflow.verificationCommand,
+            attempt: attempt, limit: workflow.correctionLimit), configuration: initial.configuration,
+            guidance: initial.guidance, workflowStage: .implementation)
+        correction.workflowAttempt = attempt; correction.repairSourceTurnID = failure.id
+        var newReview = SessionTurn(task: "Review", configuration: review.configuration,
+            guidance: review.guidance, workflowStage: .review)
+        newReview.workflowAttempt = attempt
+        var verification = SessionTurn(task: workflow.verificationCommand, configuration: initial.configuration, workflowStage: .verification)
+        verification.workflowAttempt = attempt
+        for index in session.turns!.indices where session.turns![index].state == .queued {
+            session.turns?[index].state = .cancelled; session.turns?[index].finishedAt = Date()
+        }
+        session.turns?.append(contentsOf: [correction, newReview, verification])
+        workflow.correctionsScheduled = attempt; workflow.reviewPassed = nil; workflow.state = .dispatched
+        workflow.detail = "\(failure.workflowStage!.label) non superata. Correzione Codex \(attempt) di \(workflow.correctionLimit)."
+        session.workflow = workflow; session.status = .done; session.activity = workflow.detail
+        session.task = workflow.originalTask
+        return true
+    }
+
+    private func finishFailedWorkflow(_ session: inout Session, budgetExhausted: Bool) {
+        guard let workflow = session.workflow else { return }
+        session.task = workflow.originalTask
+        if budgetExhausted && workflow.correctionLimit > 0 && workflow.attempt >= workflow.correctionLimit {
+            let corrections = workflow.correctionLimit == 1 ? "correzione" : "correzioni"
+            session.workflow?.detail += "\nLimite di \(workflow.correctionLimit) \(corrections) raggiunto. Controlla i risultati prima di avviare un nuovo workflow."
+        }
+        // Legacy workflows retain their original queue representation.
+        if workflow.correctionLimit > 0 {
+            for index in session.turns!.indices where session.turns![index].state == .queued {
+                session.turns?[index].state = .cancelled; session.turns?[index].finishedAt = Date()
+            }
         }
     }
 
@@ -610,7 +1069,7 @@ final class Coordinator {
         let aliases = [slug.replacingOccurrences(of: "-", with: " ")].filter { $0 != name.lowercased() }
         let agent = settings.settings.defaultAgent
         let project = Project(name: name, path: dir.path, aliases: aliases, defaultAgent: agent,
-                              permissionMode: agent == .claude ? settings.settings.claudePermissionMode : settings.settings.codexPermissionMode)
+                              permissionMode: settings.settings.permissionMode(for: agent))
         registry.add(project)
         AppLog.write("created project \(name) at \(dir.path)")
         return project
@@ -620,10 +1079,13 @@ final class Coordinator {
 
     func open(session s: Session) {
         let url = URL(fileURLWithPath: (s.projectPath as NSString).expandingTildeInPath)
-        if s.agent == .claude, let sid = s.agentSessionID, s.status != .running {
+        if s.usesRetiredAgent {
+            openTerminal(at: url)
+        } else if s.agent == .claude, let sid = s.agentSessionID, s.status != .running {
             openTerminal(at: url, command: "claude --resume \(sid)")
         } else if s.agent == .codex, let sid = s.agentSessionID, s.status != .running {
-            openTerminal(at: url, command: "codex resume \(sid)")
+            let backend = s.codexBackend ?? CodexBackend()
+            openTerminal(at: url, command: backend.resumeCommand(executable: codexPath ?? "codex", sessionID: sid))
         } else {
             openTerminal(at: url)
         }
@@ -675,7 +1137,7 @@ final class Coordinator {
         if pill.state == .clarify { dismissPill(after: 8) } else { dismissPill(after: 0.25) }
     }
 
-    private func showError(_ msg: String) {
+    func showError(_ msg: String) {
         pill.state = .error; pill.transcript = pill.transcript.isEmpty ? "Non ho sentito" : pill.transcript; pill.secondary = msg
         pill.visible = true; pillDidChange()
         dismissPill(after: 3)
@@ -719,5 +1181,5 @@ final class Coordinator {
 
     // MARK: Quit
 
-    func prepareForQuit() { wake.stop(); stopAll() }
+    func prepareForQuit() { wake.stop(); stopAll(includePendingPlans: false); LocalServerManager.shared.stop() }
 }
